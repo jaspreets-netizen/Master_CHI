@@ -1,5 +1,11 @@
 /**
- * Master CHI Scorecard v2.2
+ * Master CHI Scorecard v2.3
+ * Changes from v2.2:
+ *   - Label matching is now whitespace-tolerant (TRIM + non-breaking-space
+ *     normalization), so indented sub-metric rows on the Dashboard
+ *     (Solution KPIs, Uptime, Frown vs Smile, Sentiment, etc.) are read
+ *     correctly in "Complete CHI Data" instead of coming back blank.
+ *
  * Changes from v2.1:
  *   - Trend tabs now read the Dashboard by LABEL (INDEX/MATCH) instead of by fixed
  *     row number, so they work with BOTH dashboard layouts:
@@ -34,9 +40,13 @@ function colLetter_(n){var s='';while(n>0){n--;s=String.fromCharCode(65+(n%26))+
 // `labels` (first match wins, with fallbacks) and reads column `dashCol`.
 function impFormula_(sid,dashCol,labels){
   var imp='IMPORTRANGE("https://docs.google.com/spreadsheets/d/'+sid+'",'+DASH_RANGE+')';
+  // Normalize the label column before matching: convert non-breaking spaces to
+  // regular spaces and TRIM, so indented sub-metric rows (e.g. "   Solution KPIs")
+  // still match their plain label. MATCH is already case-insensitive.
+  var lookup='ARRAYFORMULA(TRIM(SUBSTITUTE(INDEX('+imp+',0,1),CHAR(160)," ")))';
   var expr='""';
   for(var i=labels.length-1;i>=0;i--){
-    expr='IFERROR(INDEX('+imp+',MATCH("'+labels[i]+'",INDEX('+imp+',0,1),0),'+dashCol+'),'+expr+')';
+    expr='IFERROR(INDEX('+imp+',MATCH("'+labels[i]+'",'+lookup+',0),'+dashCol+'),'+expr+')';
   }
   return '='+expr;
 }
