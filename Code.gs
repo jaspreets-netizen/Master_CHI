@@ -322,12 +322,76 @@ function readCemNames_(){
   return result;
 }
 
+/**
+ * Read all 13 metrics from the hidden Complete CHI Data sheet.
+ * Returns { siteName_lowercase → { metricLabel → value }, monthLabel }
+ * Uses the same "last complete month" logic as readTrendSheetComplete_.
+ */
+function readCompleteChiData_() {
+  var MIN_COVERAGE = 0.5;
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sh = ss.getSheetByName('Complete CHI Data');
+  if (!sh) { Logger.log('Complete CHI Data sheet not found — run Build All Trends first.'); return {data:{}, monthLabel:''}; }
+  var data = sh.getDataRange().getValues();
+  if (data.length < 3) return {data:{}, monthLabel:''};
+  var header = data[1]; // row 2: Site | Score | FEB 26 | MAR 26 ...
+
+  // Find CHI Score rows to gauge coverage per column
+  var chiRows = [];
+  for (var r = 2; r < data.length; r++) {
+    if (String(data[r][1]).trim() === 'CHI Score') chiRows.push(r);
+  }
+  var bestCol = -1, bestLabel = '';
+  for (var c = header.length - 1; c >= 2; c--) {
+    var good = 0;
+    for (var ri = 0; ri < chiRows.length; ri++) {
+      var v = parseFloat(data[chiRows[ri]][c]);
+      if (!isNaN(v) && v >= 1) good++;
+    }
+    if (chiRows.length > 0 && good / chiRows.length >= MIN_COVERAGE) {
+      bestCol = c; bestLabel = String(header[c]); break;
+    }
+  }
+  if (bestCol < 0) {
+    for (var c = header.length - 1; c >= 2; c--) {
+      if (chiRows.length > 0) {
+        var v = parseFloat(data[chiRows[0]][c]);
+        if (!isNaN(v) && v > 0) { bestCol = c; bestLabel = String(header[c]); break; }
+      }
+    }
+  }
+  if (bestCol < 0) return {data:{}, monthLabel:''};
+  Logger.log('Complete CHI Data → column ' + bestCol + ' (' + bestLabel + ')');
+
+  // Read all rows; column A has site name only on the first row of each merged block
+  var result = {}, currentSite = null;
+  for (var r = 2; r < data.length; r++) {
+    var siteName = String(data[r][0]).trim();
+    var label    = String(data[r][1]).trim();
+    if (siteName) currentSite = siteName.toLowerCase();
+    if (!currentSite || !label) continue;
+    if (!result[currentSite]) result[currentSite] = {};
+    var numVal = parseFloat(data[r][bestCol]);
+    if (!isNaN(numVal) && numVal > 0) result[currentSite][label] = numVal;
+  }
+  return {data: result, monthLabel: bestLabel};
+}
+
 // ════════════════════════════════════════════════════════
 // CLICKUP SYNC v3
 // ════════════════════════════════════════════════════════
-var FIELD_NAMES=['CEM Name','CHI Score','Performance Value','Experience Value','Business Value',
-  'Solution KPIs','Uptime','MTBF / MTTR','Frowns vs Smiles','Sentiment','Trust',
-  'Throughput Blueprint','Outcome Metric','Move the Needle','RAG Status'];
+var FIELD_NAMES = [
+  'Rag Status',           // dropdown: Green / Amber / Red
+  'Performance Value',
+  'Solution KPIs',
+  'MTBF / MTTR',
+  'Frowns vs Smiles',
+  'Sentiment',
+  'Trust',
+  'Throughput Blueprint',
+  'Outcome Metric',
+  'Move the Needle'
+];
 
 function loadFieldIds_(){
   var stored=PropertiesService.getScriptProperties().getProperty('testing_field_ids');
@@ -384,7 +448,7 @@ function clickupSetupFields(){
     var rawFields=(cuFetch_('GET','/list/'+listId+'/field').fields)||[];
     for(var i=0;i<rawFields.length;i++){
       var f=rawFields[i];if(f.name)existingFieldIds[f.name]=f.id;
-      if(f.name==='RAG Status'&&f.type_config&&f.type_config.options){
+      if(f.name==='Rag Status'&&f.type_config&&f.type_config.options){
         for(var j=0;j<f.type_config.options.length;j++)
           existingRagOptions[f.type_config.options[j].name]=f.type_config.options[j].id;}}
     Logger.log('Existing fields: '+JSON.stringify(Object.keys(existingFieldIds)));
@@ -397,7 +461,7 @@ function clickupSetupFields(){
     {name:'Frowns vs Smiles',type:'number'},{name:'Sentiment',type:'number'},
     {name:'Trust',type:'number'},{name:'Throughput Blueprint',type:'number'},
     {name:'Outcome Metric',type:'number'},{name:'Move the Needle',type:'number'},
-    {name:'RAG Status',type:'drop_down',type_config:{options:[
+    {name:'Rag Status',type:'drop_down',type_config:{options:[
       {name:'Green',color:'#548235'},{name:'Amber',color:'#BF8F00'},{name:'Red',color:'#FF0000'}]}}
   ];
   var fieldIds={},ragOptions=existingRagOptions;
@@ -413,7 +477,7 @@ function clickupSetupFields(){
       var f=cuFetch_('POST','/list/'+listId+'/field',payload);
       if(f&&f.id){
         fieldIds[def.name]=f.id;
-        if(def.name==='RAG Status'&&f.type_config&&f.type_config.options)
+        if(def.name==='Rag Status'&&f.type_config&&f.type_config.options)
           for(var j=0;j<f.type_config.options.length;j++)
             ragOptions[f.type_config.options[j].name]=f.type_config.options[j].id;
         Logger.log('Created: '+def.name+' → '+f.id);created++;
@@ -443,7 +507,7 @@ function clickupReadFieldIds(){
     var f=rawFields[i];
     if(!f.name)continue;
     fieldIds[f.name]=f.id;
-    if(f.name==='RAG Status'&&f.type_config&&f.type_config.options){
+    if(f.name==='Rag Status'&&f.type_config&&f.type_config.options){
       for(var j=0;j<f.type_config.options.length;j++)
         ragOptions[f.type_config.options[j].name]=f.type_config.options[j].id;}
   }
@@ -455,7 +519,7 @@ function clickupReadFieldIds(){
   Logger.log('Missing: '+JSON.stringify(missing));
   Logger.log('RAG options: '+JSON.stringify(ragOptions));
   if(missing.length===0){
-    ss.toast('✅ All 15 field IDs stored.\nRun "Update Testing Scorecard" next.','✅');
+    ss.toast('✅ All '+FIELD_NAMES.length+' field IDs stored.\nRun clickupUpdateScorecard next.','✅');
   } else {
     ss.toast('⚠ Stored what was found.\nStill missing: '+missing.join(', ')+'\nCreate these in ClickUp, then run this again.','⚠');
   }
@@ -465,38 +529,52 @@ function clickupUpdateScorecard(){
   var ss=SpreadsheetApp.getActiveSpreadsheet();
   if(!CU_TOKEN){ss.toast('API token not set. Run clickupSaveToken first.','❌');return;}
   var fids=loadFieldIds_();
-  if(!fids||!fids['CHI Score']){ss.toast('Run "Setup fields on Testing list" first.','❌');return;}
+  if(!fids||!fids['Rag Status']){ss.toast('Run clickupReadFieldIds first.','❌');return;}
   var ragOpts=loadRagOptions_();
-  ss.toast('Reading scores from trend sheets...','⏳');
+
+  ss.toast('Reading Complete CHI Data...','⏳');
+  var chiData=readCompleteChiData_();
+  if(!chiData.data||Object.keys(chiData.data).length===0){
+    ss.toast('No data found. Run "Build all trend sheets" first.','❌');return;}
+
+  // CHI Trend for RAG calculation
   var chiResult=readTrendSheetComplete_('CHI Trend');
-  var perfResult=readTrendSheetComplete_('Performance Value Trend');
-  var expResult=readTrendSheetComplete_('Experience Value Trend');
-  var bizResult=readTrendSheetComplete_('Business Value Trend');
-  var cemMap=readCemNames_();
-  var chiMap=chiResult.map,perfMap=perfResult.map,expMap=expResult.map,bizMap=bizResult.map;
-  Logger.log('Month — CHI: '+chiResult.monthLabel);
+  var chiMap=chiResult.map;
   var allKeys=Object.keys(chiMap);
+
   ss.toast('Fetching tasks...','⏳');
   var list=findTestingList_(),tasks=getAllTasks_(list.id);
-  Logger.log('Tasks: '+tasks.length);
+  Logger.log('Tasks: '+tasks.length+'  Month: '+chiData.monthLabel);
+
   ss.toast('Updating '+tasks.length+' tasks...','⏳');
   var updated=0,skipped=0;
   for(var t=0;t<tasks.length;t++){
     var task=tasks[t],matchKey=matchSite_(task.name,allKeys);
     if(!matchKey){Logger.log('No match: "'+task.name+'"');skipped++;continue;}
-    var chi=chiMap[matchKey]||null,perf=perfMap[matchKey]||null;
-    var exp=expMap[matchKey]||null,biz=bizMap[matchKey]||null,cem=cemMap[matchKey]||null;
+    var d=chiData.data[matchKey]||{};
+    var chi=chiMap[matchKey]||null;
     Logger.log('→ '+task.name+' CHI='+chi);
-    setField_(task.id,fids['CHI Score'],chi);
-    setField_(task.id,fids['Performance Value'],perf);
-    setField_(task.id,fids['Experience Value'],exp);
-    setField_(task.id,fids['Business Value'],biz);
-    setField_(task.id,fids['CEM Name'],cem);
-    if(chi!==null&&fids['RAG Status']&&ragOpts){
+
+    // Performance pillar
+    setField_(task.id,fids['Performance Value'],    d['Performance Value']||null);
+    setField_(task.id,fids['Solution KPIs'],        d['Solution KPIs']||null);
+    setField_(task.id,fids['MTBF / MTTR'],          d['MTBF / MTTR']||null);
+    // Experience pillar (sheet label → ClickUp field name differs)
+    setField_(task.id,fids['Frowns vs Smiles'],     d['Frown vs Smile']||null);
+    setField_(task.id,fids['Sentiment'],            d['Sentiment']||null);
+    setField_(task.id,fids['Trust'],                d['Trust']||null);
+    // Business pillar (sheet labels slightly differ)
+    setField_(task.id,fids['Throughput Blueprint'], d['Thruput Blueprint']||null);
+    setField_(task.id,fids['Outcome Metric'],       d['Outcome Metrics']||null);
+    setField_(task.id,fids['Move the Needle'],      d['Move the Needle']||null);
+
+    // Rag Status from CHI Score
+    if(chi!==null&&fids['Rag Status']&&ragOpts){
       var optId=ragOpts[ragKey_(chi)];
-      if(optId)setField_(task.id,fids['RAG Status'],optId);}
+      if(optId)setField_(task.id,fids['Rag Status'],optId);
+      else Logger.log('  RAG option not found for: '+ragKey_(chi));}
     updated++;Utilities.sleep(300);}
-  ss.toast('✅ '+updated+' tasks updated, '+skipped+' skipped.\nMonth: '+chiResult.monthLabel,'✅ Done');
+  ss.toast('✅ '+updated+' updated, '+skipped+' skipped.\nMonth: '+chiData.monthLabel,'✅ Done');
   Logger.log('=== DONE: '+updated+' updated, '+skipped+' skipped ===');
 }
 
