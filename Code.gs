@@ -6,16 +6,40 @@
  *
  * RUN ORDER (first time):
  *   1. Build all trend sheets  (⚙ Master CHI → 📊 Build all trend sheets)
- *   2. Setup fields            (⚙ Master CHI → 🔧 Setup fields on Testing list)
- *   3. Update data             (⚙ Master CHI → 🔄 Update Testing Scorecard)
- *   4. Auto-sync (once)        (⚙ Master CHI → ⏱ Set up 24-hour auto-sync)
+ *   2. Add missing tasks       (function dropdown → clickupAddMissingTasks)
+ *   3. Sync data               (⚙ Master CHI → 🔄 Sync data with ClickUp)
+ *   4. Enable auto-sync        (⚙ Master CHI → ⏱ Enable daily auto-sync)
+ *
+ * TEST list: Rough-CHI-scorecard (ID hardcoded below)
+ * PRODUCTION list: CHI Scorecard — NEVER TOUCH
  */
 
 // ═══ CONFIG ═══
 var CU_TOKEN     = PropertiesService.getUserProperties().getProperty('CU_TOKEN');
 var CU_TEAM_ID   = '90161459573';
 var CU_FOLDER_ID = '90169480684';  // Customer Success → Health & Growth
-var CU_LIST_NAME = 'CHI Scorecards';
+var CU_LIST_NAME = 'Rough-CHI-scorecard';   // TEST list — NEVER touch 'CHI Scorecard' (production)
+var CU_LIST_ID   = '3002100674775538475';   // Rough-CHI-scorecard (hardcoded — no name search)
+
+// Field UUIDs for Rough-CHI-scorecard (confirmed from ClickUp AI, 2026-06-20)
+var CU_FIELD_IDS = {
+  'Rag Status':           'ddcb078c-86b5-430a-91b4-00666b6c28b4',
+  'Performance Value':    '72a81da4-a90b-4aff-a22c-cf0d89e10e3f',
+  'Solution KPIs':        '9aab35b1-3d7a-4c73-8bba-98be2938f0db',
+  'MTBF / MTTR':          '8e0362e9-274e-4a49-8ede-9f7f5b74c571',
+  'Frowns vs Smiles':     'e73ec803-997d-44b8-b4ba-8b48ac902b1b',
+  'Sentiment':            'c4a2486a-f131-49ee-aa85-128beb7b7621',
+  'Trust':                '05da7d07-b7fb-4f3a-876d-740b3e591bad',
+  'Throughput Blueprint': 'bdb6c737-ac55-4214-98ea-6918f7c3ddd5',
+  'Outcome Metric':       '1581a372-d309-405d-9200-36465aee3bba',
+  'Move the Needle':      'a3187725-5742-4210-a55c-5f5643764079'
+};
+// Dropdown option UUIDs for the Rag Status field
+var CU_RAG_OPTIONS = {
+  'Green': '29f8b4ca-d1cb-4c3d-8f54-b8c917297443',
+  'Amber': '35a5bef3-d708-485e-afd5-0087a0021f0c',
+  'Red':   'cc8c391d-887f-4dd7-ad51-577db9f0646d'
+};
 
 var CLR = {DB:'#1F4E79',W:'#FFFFFF',P:'#2E75B6',E:'#548235',B:'#BF8F00',
   GY:'#EFEFEF',ME:'#DCEEFB',LBL:'#D9D9D9',SHE:'#B6D7A8',EXG:'#E2EFDA',BZG:'#FFF2CC'};
@@ -48,7 +72,10 @@ function clickupSaveToken() {
 // ════════════════════════════════════════════════════════
 function onOpen() {
   SpreadsheetApp.getUi().createMenu('⚙ Master CHI')
-    .addItem('📊 Build all trend sheets','buildAllTrends')
+    .addItem('📊 Build all trend sheets', 'buildAllTrends')
+    .addSeparator()
+    .addItem('🔄 Sync data with ClickUp',  'clickupUpdateScorecard')
+    .addItem('⏱ Enable daily auto-sync',   'clickupSetupDailySync')
     .addToUi();
 }
 
@@ -85,7 +112,8 @@ function buildMasterActivation(){
     sh.getRange(r,1).setValue(i+1).setHorizontalAlignment('center').setFontColor('#ccc');
     sh.getRange(r,2).setBackground(CLR.ME);sh.getRange(r,3).setBackground(CLR.ME);sh.getRange(r,4).setBackground(CLR.ME);
     sh.getRange(r,5).setFormula('=IF(D'+r+'="","",IMPORTRANGE(D'+r+',"Dashboard!A3"))');
-    sh.getRange(r,6).setFormula('=IF(D'+r+'="","",IF(ISTEXT(E'+r+'),"✅ Connected","⚠ Click E'+r+' → Allow Access"))');}
+    sh.getRange(r,6).setFormula('=IF(D'+r+'="","",IF(ISTEXT(E'+r+'),"✅ Connected","⚠ Click E'+r+' → Allow Access"))');
+  }
   sh.getRange(104,1).setValue('Instructions').setFontWeight('bold').setFontColor(CLR.DB);
   sh.getRange(105,1).setValue('1. Enter site name in column B, CEM name in column C, and paste the full Google Sheet URL in column D').setFontSize(10).setFontColor('#666');
   sh.getRange(106,1).setValue('2. Column E will show an IMPORTRANGE formula — click it and grant access when prompted').setFontSize(10).setFontColor('#666');
@@ -236,12 +264,9 @@ function cuFetch_(method,endpoint,payload){
   return JSON.parse(text);
 }
 function findTestingList_(){
-  var props=PropertiesService.getScriptProperties(),storedId=props.getProperty('testing_list_id');
-  if(storedId){try{var list=cuFetch_('GET','/list/'+storedId);if(list&&list.id)return list;}catch(e){}}
-  var lists=cuFetch_('GET','/folder/'+CU_FOLDER_ID+'/list').lists;
-  for(var i=0;i<lists.length;i++){
-    if(lists[i].name===CU_LIST_NAME){props.setProperty('testing_list_id',lists[i].id);return lists[i];}}
-  throw new Error('"'+CU_LIST_NAME+'" list not found. Run "Create Testing Scorecard" first.');
+  var list=cuFetch_('GET','/list/'+CU_LIST_ID);
+  if(!list||!list.id)throw new Error('List '+CU_LIST_ID+' ('+CU_LIST_NAME+') not found via API.');
+  return list;
 }
 /**
  * Logs every Space → Folder → List in your workspace.
@@ -491,8 +516,6 @@ function clickupSetupFields(){
 /**
  * Run this INSTEAD of clickupSetupFields when you get a 403 permission error.
  * Create the 15 fields manually in ClickUp first, then run this to store their IDs.
- *
- * Menu: ⚙ Master CHI → 📥 Read existing field IDs from ClickUp
  */
 function clickupReadFieldIds(){
   var ss=SpreadsheetApp.getActiveSpreadsheet();
@@ -528,19 +551,13 @@ function clickupReadFieldIds(){
 function clickupUpdateScorecard(){
   var ss=SpreadsheetApp.getActiveSpreadsheet();
   if(!CU_TOKEN){ss.toast('API token not set. Run clickupSaveToken first.','❌');return;}
-  var fids=loadFieldIds_();
-  if(!fids||!fids['Rag Status']){ss.toast('Run clickupReadFieldIds first.','❌');return;}
-  var ragOpts=loadRagOptions_();
 
   ss.toast('Reading Complete CHI Data...','⏳');
   var chiData=readCompleteChiData_();
   if(!chiData.data||Object.keys(chiData.data).length===0){
     ss.toast('No data found. Run "Build all trend sheets" first.','❌');return;}
 
-  // CHI Trend for RAG calculation
-  var chiResult=readTrendSheetComplete_('CHI Trend');
-  var chiMap=chiResult.map;
-  var allKeys=Object.keys(chiMap);
+  var allKeys=Object.keys(chiData.data);
 
   ss.toast('Fetching tasks...','⏳');
   var list=findTestingList_(),tasks=getAllTasks_(list.id);
@@ -552,26 +569,26 @@ function clickupUpdateScorecard(){
     var task=tasks[t],matchKey=matchSite_(task.name,allKeys);
     if(!matchKey){Logger.log('No match: "'+task.name+'"');skipped++;continue;}
     var d=chiData.data[matchKey]||{};
-    var chi=chiMap[matchKey]||null;
+    var chi=d['CHI Score']||null;
     Logger.log('→ '+task.name+' CHI='+chi);
 
     // Performance pillar
-    setField_(task.id,fids['Performance Value'],    d['Performance Value']||null);
-    setField_(task.id,fids['Solution KPIs'],        d['Solution KPIs']||null);
-    setField_(task.id,fids['MTBF / MTTR'],          d['MTBF / MTTR']||null);
+    setField_(task.id,CU_FIELD_IDS['Performance Value'],    d['Performance Value']||null);
+    setField_(task.id,CU_FIELD_IDS['Solution KPIs'],        d['Solution KPIs']||null);
+    setField_(task.id,CU_FIELD_IDS['MTBF / MTTR'],          d['MTBF / MTTR']||null);
     // Experience pillar (sheet label → ClickUp field name differs)
-    setField_(task.id,fids['Frowns vs Smiles'],     d['Frown vs Smile']||null);
-    setField_(task.id,fids['Sentiment'],            d['Sentiment']||null);
-    setField_(task.id,fids['Trust'],                d['Trust']||null);
+    setField_(task.id,CU_FIELD_IDS['Frowns vs Smiles'],     d['Frown vs Smile']||null);
+    setField_(task.id,CU_FIELD_IDS['Sentiment'],            d['Sentiment']||null);
+    setField_(task.id,CU_FIELD_IDS['Trust'],                d['Trust']||null);
     // Business pillar (sheet labels slightly differ)
-    setField_(task.id,fids['Throughput Blueprint'], d['Thruput Blueprint']||null);
-    setField_(task.id,fids['Outcome Metric'],       d['Outcome Metrics']||null);
-    setField_(task.id,fids['Move the Needle'],      d['Move the Needle']||null);
+    setField_(task.id,CU_FIELD_IDS['Throughput Blueprint'], d['Thruput Blueprint']||null);
+    setField_(task.id,CU_FIELD_IDS['Outcome Metric'],       d['Outcome Metrics']||null);
+    setField_(task.id,CU_FIELD_IDS['Move the Needle'],      d['Move the Needle']||null);
 
     // Rag Status from CHI Score
-    if(chi!==null&&fids['Rag Status']&&ragOpts){
-      var optId=ragOpts[ragKey_(chi)];
-      if(optId)setField_(task.id,fids['Rag Status'],optId);
+    if(chi!==null){
+      var optId=CU_RAG_OPTIONS[ragKey_(chi)];
+      if(optId)setField_(task.id,CU_FIELD_IDS['Rag Status'],optId);
       else Logger.log('  RAG option not found for: '+ragKey_(chi));}
     updated++;Utilities.sleep(300);}
   ss.toast('✅ '+updated+' updated, '+skipped+' skipped.\nMonth: '+chiData.monthLabel,'✅ Done');
