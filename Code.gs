@@ -26,19 +26,22 @@ var DASH_RANGE = '"Dashboard!A1:AZ80"';
 // API TOKEN SETUP (run once — only you can see User Properties)
 // ════════════════════════════════════════════════════════
 /**
- * Run this once to store your ClickUp API token securely.
- * It is saved as a User Property — tied to YOUR Google login.
- * Editors of this sheet cannot read it.
+ * HOW TO USE:
+ * 1. Replace PASTE_YOUR_TOKEN_HERE below with your actual ClickUp API token
+ * 2. Run this function once from the editor
+ * 3. Remove the token value (put back PASTE_YOUR_TOKEN_HERE)
+ * Token is saved to User Properties — editors of this sheet cannot read it.
  */
 function clickupSaveToken() {
-  var ui     = SpreadsheetApp.getUi();
-  var result = ui.prompt('ClickUp API Token', 'Paste your ClickUp API token below:', ui.ButtonSet.OK_CANCEL);
-  if (result.getSelectedButton() !== ui.Button.OK) return;
-  var token = result.getResponseText().trim();
-  if (!token) { ui.alert('No token entered — nothing saved.'); return; }
+  var token = 'PASTE_YOUR_TOKEN_HERE';
+  if (token === 'PASTE_YOUR_TOKEN_HERE') {
+    Logger.log('Step 1: Replace PASTE_YOUR_TOKEN_HERE with your real token, then run again.');
+    return;
+  }
   PropertiesService.getUserProperties().setProperty('CU_TOKEN', token);
-  ui.alert('Saved. Your token is stored as a User Property — only visible to your Google account.');
+  Logger.log('Done — token saved to User Properties. Now remove the token from the code (put back PASTE_YOUR_TOKEN_HERE).');
 }
+
 
 // ════════════════════════════════════════════════════════
 // MENU
