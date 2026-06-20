@@ -12,8 +12,10 @@
  */
 
 // ═══ CONFIG ═══
-var CU_TOKEN   = PropertiesService.getScriptProperties().getProperty('CU_TOKEN');
-var CU_TEAM_ID = '90161459573';
+var CU_TOKEN     = PropertiesService.getScriptProperties().getProperty('CU_TOKEN');
+var CU_TEAM_ID   = '90161459573';
+var CU_FOLDER    = CU_FOLDER;
+var CU_LIST_NAME = 'CHI Scorecard';
 
 var CLR = {DB:'#1F4E79',W:'#FFFFFF',P:'#2E75B6',E:'#548235',B:'#BF8F00',
   GY:'#EFEFEF',ME:'#DCEEFB',LBL:'#D9D9D9',SHE:'#B6D7A8',EXG:'#E2EFDA',BZG:'#FFF2CC'};
@@ -232,11 +234,11 @@ function findFolder_(folderName){
 function findTestingList_(){
   var props=PropertiesService.getScriptProperties(),storedId=props.getProperty('testing_list_id');
   if(storedId){try{var list=cuFetch_('GET','/list/'+storedId);if(list&&list.id)return list;}catch(e){}}
-  var folder=findFolder_('Health & Growth');
+  var folder=findFolder_(CU_FOLDER);
   var lists=cuFetch_('GET','/folder/'+folder.id+'/list').lists;
   for(var i=0;i<lists.length;i++){
-    if(lists[i].name==='Testing CHI Scorecard'){props.setProperty('testing_list_id',lists[i].id);return lists[i];}}
-  throw new Error('"Testing CHI Scorecard" list not found. Run "Create Testing Scorecard" first.');
+    if(lists[i].name===CU_LIST_NAME){props.setProperty('testing_list_id',lists[i].id);return lists[i];}}
+  throw new Error('"'+CU_LIST_NAME+'" list not found. Run "Create Testing Scorecard" first.');
 }
 function getAllTasks_(listId){
   var tasks=[],page=0;
@@ -340,7 +342,7 @@ function setField_(taskId,fieldId,value){
 function setupFieldsOnTestingList(){
   var ss=SpreadsheetApp.getActiveSpreadsheet();
   if(!CU_TOKEN){ss.toast('CU_TOKEN not set in Script Properties.','❌');return;}
-  ss.toast('Finding Testing CHI Scorecard list...','⏳');
+  ss.toast('Finding '+CU_LIST_NAME+' list...','⏳');
   var list;try{list=findTestingList_();}catch(e){ss.toast(e.message,'❌');return;}
   var listId=list.id;
   Logger.log('Setting up fields on list: '+listId);
@@ -484,9 +486,9 @@ function diagnoseTestingList(){
 function pushToClickUp(){
   var ss=SpreadsheetApp.getActiveSpreadsheet();
   if(!CU_TOKEN){ss.toast('CU_TOKEN not set in Script Properties.','❌');return;}
-  ss.toast('Creating Testing CHI Scorecard list...','⏳');
-  var folder;try{folder=findFolder_('Health & Growth');}catch(e){ss.toast(e.message,'❌');return;}
-  var list=cuFetch_('POST','/folder/'+folder.id+'/list',{name:'Testing CHI Scorecard'});
+  ss.toast('Creating '+CU_LIST_NAME+' list...','⏳');
+  var folder;try{folder=findFolder_(CU_FOLDER);}catch(e){ss.toast(e.message,'❌');return;}
+  var list=cuFetch_('POST','/folder/'+folder.id+'/list',{name:CU_LIST_NAME});
   if(!list||!list.id){ss.toast('List creation failed.','❌');return;}
   PropertiesService.getScriptProperties().setProperty('testing_list_id',list.id);
   Logger.log('Created list: '+list.id);
