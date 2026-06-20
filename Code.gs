@@ -12,7 +12,7 @@
  */
 
 // ═══ CONFIG ═══
-var CU_TOKEN     = PropertiesService.getScriptProperties().getProperty('CU_TOKEN');
+var CU_TOKEN     = PropertiesService.getUserProperties().getProperty('CU_TOKEN');
 var CU_TEAM_ID   = '90161459573';
 var CU_FOLDER_ID = '90169480684';  // Customer Success → Health & Growth
 var CU_LIST_NAME = 'CHI Scorecard';
@@ -21,6 +21,24 @@ var CLR = {DB:'#1F4E79',W:'#FFFFFF',P:'#2E75B6',E:'#548235',B:'#BF8F00',
   GY:'#EFEFEF',ME:'#DCEEFB',LBL:'#D9D9D9',SHE:'#B6D7A8',EXG:'#E2EFDA',BZG:'#FFF2CC'};
 var MN_AB = {2:'Feb',3:'Mar',4:'Apr',5:'May',6:'Jun',7:'Jul',8:'Aug',9:'Sep',10:'Oct',11:'Nov',12:'Dec'};
 var DASH_RANGE = '"Dashboard!A1:AZ80"';
+
+// ════════════════════════════════════════════════════════
+// API TOKEN SETUP (run once — only you can see User Properties)
+// ════════════════════════════════════════════════════════
+/**
+ * Run this once to store your ClickUp API token securely.
+ * It is saved as a User Property — tied to YOUR Google login.
+ * Editors of this sheet cannot read it.
+ */
+function clickupSaveToken() {
+  var ui     = SpreadsheetApp.getUi();
+  var result = ui.prompt('ClickUp API Token', 'Paste your ClickUp API token below:', ui.ButtonSet.OK_CANCEL);
+  if (result.getSelectedButton() !== ui.Button.OK) return;
+  var token = result.getResponseText().trim();
+  if (!token) { ui.alert('No token entered — nothing saved.'); return; }
+  PropertiesService.getUserProperties().setProperty('CU_TOKEN', token);
+  ui.alert('Saved. Your token is stored as a User Property — only visible to your Google account.');
+}
 
 // ════════════════════════════════════════════════════════
 // MENU
@@ -228,7 +246,7 @@ function findTestingList_(){
  */
 function clickupShowStructure(){
   var ss=SpreadsheetApp.getActiveSpreadsheet();
-  if(!CU_TOKEN){ss.toast('CU_TOKEN not set in Script Properties.','❌');return;}
+  if(!CU_TOKEN){ss.toast('API token not set. Run clickupSaveToken first.','❌');return;}
   var spaces=cuFetch_('GET','/team/'+CU_TEAM_ID+'/space?archived=false').spaces;
   Logger.log('=== CLICKUP WORKSPACE STRUCTURE ===');
   for(var i=0;i<spaces.length;i++){
@@ -352,7 +370,7 @@ function setField_(taskId,fieldId,value){
 
 function clickupSetupFields(){
   var ss=SpreadsheetApp.getActiveSpreadsheet();
-  if(!CU_TOKEN){ss.toast('CU_TOKEN not set in Script Properties.','❌');return;}
+  if(!CU_TOKEN){ss.toast('API token not set. Run clickupSaveToken first.','❌');return;}
   ss.toast('Finding '+CU_LIST_NAME+' list...','⏳');
   var list;try{list=findTestingList_();}catch(e){ss.toast(e.message,'❌');return;}
   var listId=list.id;
@@ -411,7 +429,7 @@ function clickupSetupFields(){
  */
 function clickupReadFieldIds(){
   var ss=SpreadsheetApp.getActiveSpreadsheet();
-  if(!CU_TOKEN){ss.toast('CU_TOKEN not set in Script Properties.','❌');return;}
+  if(!CU_TOKEN){ss.toast('API token not set. Run clickupSaveToken first.','❌');return;}
   ss.toast('Reading field IDs from ClickUp...','⏳');
   var list;try{list=findTestingList_();}catch(e){ss.toast(e.message,'❌');return;}
   var rawFields;
@@ -442,7 +460,7 @@ function clickupReadFieldIds(){
 
 function clickupUpdateScorecard(){
   var ss=SpreadsheetApp.getActiveSpreadsheet();
-  if(!CU_TOKEN){ss.toast('CU_TOKEN not set in Script Properties.','❌');return;}
+  if(!CU_TOKEN){ss.toast('API token not set. Run clickupSaveToken first.','❌');return;}
   var fids=loadFieldIds_();
   if(!fids||!fids['CHI Score']){ss.toast('Run "Setup fields on Testing list" first.','❌');return;}
   var ragOpts=loadRagOptions_();
@@ -481,7 +499,7 @@ function clickupUpdateScorecard(){
 
 function clickupDiagnose(){
   var ss=SpreadsheetApp.getActiveSpreadsheet();
-  if(!CU_TOKEN){ss.toast('CU_TOKEN not set in Script Properties.','❌');return;}
+  if(!CU_TOKEN){ss.toast('API token not set. Run clickupSaveToken first.','❌');return;}
   ss.toast('Running diagnostics — check Logs when done...','⏳');
   var list;try{list=findTestingList_();}catch(e){ss.toast(e.message,'❌');return;}
   Logger.log('=== LIST ===\nName: '+list.name+'  ID: '+list.id);
@@ -496,7 +514,7 @@ function clickupDiagnose(){
 
 function clickupCreateList(){
   var ss=SpreadsheetApp.getActiveSpreadsheet();
-  if(!CU_TOKEN){ss.toast('CU_TOKEN not set in Script Properties.','❌');return;}
+  if(!CU_TOKEN){ss.toast('API token not set. Run clickupSaveToken first.','❌');return;}
   ss.toast('Creating '+CU_LIST_NAME+' list...','⏳');
   var list=cuFetch_('POST','/folder/'+CU_FOLDER_ID+'/list',{name:CU_LIST_NAME});
   if(!list||!list.id){ss.toast('List creation failed.','❌');return;}
