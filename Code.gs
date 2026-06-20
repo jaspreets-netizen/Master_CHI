@@ -29,6 +29,7 @@ function onOpen() {
     .addSeparator()
     .addItem('🔗 Create Testing Scorecard list (first run only)','pushToClickUp')
     .addItem('🔧 Setup fields on Testing list','setupFieldsOnTestingList')
+    .addItem('📥 Read existing field IDs from ClickUp','readExistingFieldIds')
     .addItem('🔄 Update Testing Scorecard','updateTestingScorecard')
     .addSeparator()
     .addItem('⏱ Set up 24-hour auto-sync','setupDailySync')
@@ -387,6 +388,43 @@ function setupFieldsOnTestingList(){
   saveFieldIds_(fieldIds,ragOptions);
   ss.toast('✅ Field setup complete\nCreated: '+created+'\nAlready existed: '+skipped+'\nFailed: '+failed+'\nRun "Update Testing Scorecard" next.','✅');
   Logger.log('Field IDs: '+JSON.stringify(fieldIds));
+}
+
+/**
+ * Run this INSTEAD of setupFieldsOnTestingList when you get a 403 permission error.
+ * Create the 15 fields manually in ClickUp first, then run this to store their IDs.
+ *
+ * Menu: ⚙ Master CHI → 📥 Read existing field IDs from ClickUp
+ */
+function readExistingFieldIds(){
+  var ss=SpreadsheetApp.getActiveSpreadsheet();
+  if(!CU_TOKEN){ss.toast('CU_TOKEN not set in Script Properties.','❌');return;}
+  ss.toast('Reading field IDs from ClickUp...','⏳');
+  var list;try{list=findTestingList_();}catch(e){ss.toast(e.message,'❌');return;}
+  var rawFields;
+  try{rawFields=(cuFetch_('GET','/list/'+list.id+'/field').fields)||[];}
+  catch(e){ss.toast('Could not read fields: '+e.message,'❌');return;}
+  var fieldIds={},ragOptions={},found=[],missing=[];
+  for(var i=0;i<rawFields.length;i++){
+    var f=rawFields[i];
+    if(!f.name)continue;
+    fieldIds[f.name]=f.id;
+    if(f.name==='RAG Status'&&f.type_config&&f.type_config.options){
+      for(var j=0;j<f.type_config.options.length;j++)
+        ragOptions[f.type_config.options[j].name]=f.type_config.options[j].id;}
+  }
+  for(var k=0;k<FIELD_NAMES.length;k++){
+    if(fieldIds[FIELD_NAMES[k]])found.push(FIELD_NAMES[k]);
+    else missing.push(FIELD_NAMES[k]);}
+  saveFieldIds_(fieldIds,ragOptions);
+  Logger.log('Found: '+JSON.stringify(found));
+  Logger.log('Missing: '+JSON.stringify(missing));
+  Logger.log('RAG options: '+JSON.stringify(ragOptions));
+  if(missing.length===0){
+    ss.toast('✅ All 15 field IDs stored.\nRun "Update Testing Scorecard" next.','✅');
+  } else {
+    ss.toast('⚠ Stored what was found.\nStill missing: '+missing.join(', ')+'\nCreate these in ClickUp, then run this again.','⚠');
+  }
 }
 
 function updateTestingScorecard(){
