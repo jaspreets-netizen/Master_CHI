@@ -19,7 +19,7 @@ var CU_TOKEN     = PropertiesService.getUserProperties().getProperty('CU_TOKEN')
 var CU_TEAM_ID   = '90161459573';
 var CU_FOLDER_ID = '90169480684';  // Customer Success → Health & Growth
 var CU_LIST_NAME = 'Rough-CHI-scorecard';   // TEST list — NEVER touch 'CHI Scorecard' (production)
-var CU_LIST_ID   = '3002100674775538475';   // Rough-CHI-scorecard (hardcoded — no name search)
+var CU_LIST_ID   = '2kz0ncbn-46736';   // Rough-CHI-scorecard (hardcoded — no name search)
 
 // Field UUIDs for Rough-CHI-scorecard (confirmed from ClickUp AI, 2026-06-20)
 var CU_FIELD_IDS = {
@@ -265,10 +265,6 @@ function findTestingList_(){
   if(!list||!list.id)throw new Error('List '+CU_LIST_ID+' ('+CU_LIST_NAME+') not found via API.');
   return list;
 }
-/**
- * Logs every Space → Folder → List in your workspace.
- * Run this to verify CU_FOLDER_ID points to the right folder.
- */
 function clickupShowStructure(){
   var ss=SpreadsheetApp.getActiveSpreadsheet();
   if(!CU_TOKEN){ss.toast('API token not set. Run clickupSaveToken first.','❌');return;}
@@ -343,11 +339,6 @@ function readCemNames_(){
   return result;
 }
 
-/**
- * Read all 13 metrics from the hidden Complete CHI Data sheet.
- * Returns { siteName_lowercase → { metricLabel → value }, monthLabel }
- * Uses the same "last complete month" logic as readTrendSheetComplete_.
- */
 function readCompleteChiData_() {
   var MIN_COVERAGE = 0.5;
   var ss = SpreadsheetApp.getActiveSpreadsheet();
