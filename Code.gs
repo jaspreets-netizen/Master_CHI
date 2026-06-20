@@ -26,20 +26,8 @@ var DASH_RANGE = '"Dashboard!A1:AZ80"';
 // MENU
 // ════════════════════════════════════════════════════════
 function onOpen() {
-  var ui = SpreadsheetApp.getUi();
-  var cuMenu = ui.createMenu('ClickUp')
-    .addItem('1. Create list','pushToClickUp')
-    .addItem('2. Setup fields','setupFieldsOnTestingList')
-    .addItem('3. Read field IDs','readExistingFieldIds')
-    .addItem('4. Update scorecard','updateTestingScorecard')
-    .addSeparator()
-    .addItem('Setup daily sync','setupDailySync')
-    .addItem('Stop daily sync','removeDailySync')
-    .addSeparator()
-    .addItem('Diagnose','diagnoseTestingList');
-  ui.createMenu('⚙ Master CHI')
+  SpreadsheetApp.getUi().createMenu('⚙ Master CHI')
     .addItem('📊 Build all trend sheets','buildAllTrends')
-    .addSubMenu(cuMenu)
     .addToUi();
 }
 
@@ -341,7 +329,7 @@ function setField_(taskId,fieldId,value){
   catch(e){Logger.log('setField failed task='+taskId+' field='+fieldId+': '+e.message);}
 }
 
-function setupFieldsOnTestingList(){
+function clickupSetupFields(){
   var ss=SpreadsheetApp.getActiveSpreadsheet();
   if(!CU_TOKEN){ss.toast('CU_TOKEN not set in Script Properties.','❌');return;}
   ss.toast('Finding '+CU_LIST_NAME+' list...','⏳');
@@ -395,12 +383,12 @@ function setupFieldsOnTestingList(){
 }
 
 /**
- * Run this INSTEAD of setupFieldsOnTestingList when you get a 403 permission error.
+ * Run this INSTEAD of clickupSetupFields when you get a 403 permission error.
  * Create the 15 fields manually in ClickUp first, then run this to store their IDs.
  *
  * Menu: ⚙ Master CHI → 📥 Read existing field IDs from ClickUp
  */
-function readExistingFieldIds(){
+function clickupReadFieldIds(){
   var ss=SpreadsheetApp.getActiveSpreadsheet();
   if(!CU_TOKEN){ss.toast('CU_TOKEN not set in Script Properties.','❌');return;}
   ss.toast('Reading field IDs from ClickUp...','⏳');
@@ -431,7 +419,7 @@ function readExistingFieldIds(){
   }
 }
 
-function updateTestingScorecard(){
+function clickupUpdateScorecard(){
   var ss=SpreadsheetApp.getActiveSpreadsheet();
   if(!CU_TOKEN){ss.toast('CU_TOKEN not set in Script Properties.','❌');return;}
   var fids=loadFieldIds_();
@@ -470,7 +458,7 @@ function updateTestingScorecard(){
   Logger.log('=== DONE: '+updated+' updated, '+skipped+' skipped ===');
 }
 
-function diagnoseTestingList(){
+function clickupDiagnose(){
   var ss=SpreadsheetApp.getActiveSpreadsheet();
   if(!CU_TOKEN){ss.toast('CU_TOKEN not set in Script Properties.','❌');return;}
   ss.toast('Running diagnostics — check Logs when done...','⏳');
@@ -485,7 +473,7 @@ function diagnoseTestingList(){
   ss.toast('Diagnostics complete — open View → Logs.','✅');
 }
 
-function pushToClickUp(){
+function clickupCreateList(){
   var ss=SpreadsheetApp.getActiveSpreadsheet();
   if(!CU_TOKEN){ss.toast('CU_TOKEN not set in Script Properties.','❌');return;}
   ss.toast('Creating '+CU_LIST_NAME+' list...','⏳');
@@ -506,16 +494,16 @@ function pushToClickUp(){
 // ════════════════════════════════════════════════════════
 // 24-HOUR AUTO-SYNC
 // ════════════════════════════════════════════════════════
-function setupDailySync(){
+function clickupSetupDailySync(){
   var triggers=ScriptApp.getProjectTriggers();
   for(var i=0;i<triggers.length;i++)
-    if(triggers[i].getHandlerFunction()==='updateTestingScorecard')ScriptApp.deleteTrigger(triggers[i]);
-  ScriptApp.newTrigger('updateTestingScorecard').timeBased().everyDays(1).atHour(3).create();
+    if(triggers[i].getHandlerFunction()==='clickupUpdateScorecard')ScriptApp.deleteTrigger(triggers[i]);
+  ScriptApp.newTrigger('clickupUpdateScorecard').timeBased().everyDays(1).atHour(3).create();
   SpreadsheetApp.getActiveSpreadsheet().toast('✅ Auto-sync active — runs daily at 3 AM.','✅');
 }
-function removeDailySync(){
+function clickupStopDailySync(){
   var triggers=ScriptApp.getProjectTriggers(),removed=0;
   for(var i=0;i<triggers.length;i++)
-    if(triggers[i].getHandlerFunction()==='updateTestingScorecard'){ScriptApp.deleteTrigger(triggers[i]);removed++;}
+    if(triggers[i].getHandlerFunction()==='clickupUpdateScorecard'){ScriptApp.deleteTrigger(triggers[i]);removed++;}
   SpreadsheetApp.getActiveSpreadsheet().toast(removed>0?'✅ Auto-sync stopped.':'No trigger found.',removed>0?'✅':'ℹ️');
 }
