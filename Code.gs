@@ -14,7 +14,7 @@
 // ═══ CONFIG ═══
 var CU_TOKEN     = PropertiesService.getScriptProperties().getProperty('CU_TOKEN');
 var CU_TEAM_ID   = '90161459573';
-var CU_FOLDER    = CU_FOLDER;
+var CU_FOLDER_ID = '90169480684';  // Customer Success → Health & Growth
 var CU_LIST_NAME = 'CHI Scorecard';
 
 var CLR = {DB:'#1F4E79',W:'#FFFFFF',P:'#2E75B6',E:'#548235',B:'#BF8F00',
@@ -214,25 +214,17 @@ function cuFetch_(method,endpoint,payload){
   if(code<200||code>=300)throw new Error('ClickUp '+code+': '+text.substring(0,200));
   return JSON.parse(text);
 }
-function findFolder_(folderName){
-  var spaces=cuFetch_('GET','/team/'+CU_TEAM_ID+'/space?archived=false').spaces;
-  for(var i=0;i<spaces.length;i++){
-    var folders=cuFetch_('GET','/space/'+spaces[i].id+'/folder?archived=false').folders;
-    for(var j=0;j<folders.length;j++){if(folders[j].name===folderName)return folders[j];}}
-  throw new Error('Folder "'+folderName+'" not found.');
-}
 function findTestingList_(){
   var props=PropertiesService.getScriptProperties(),storedId=props.getProperty('testing_list_id');
   if(storedId){try{var list=cuFetch_('GET','/list/'+storedId);if(list&&list.id)return list;}catch(e){}}
-  var folder=findFolder_(CU_FOLDER);
-  var lists=cuFetch_('GET','/folder/'+folder.id+'/list').lists;
+  var lists=cuFetch_('GET','/folder/'+CU_FOLDER_ID+'/list').lists;
   for(var i=0;i<lists.length;i++){
     if(lists[i].name===CU_LIST_NAME){props.setProperty('testing_list_id',lists[i].id);return lists[i];}}
   throw new Error('"'+CU_LIST_NAME+'" list not found. Run "Create Testing Scorecard" first.');
 }
 /**
  * Logs every Space → Folder → List in your workspace.
- * Run this to find the exact names to put in CU_FOLDER / CU_LIST_NAME.
+ * Run this to verify CU_FOLDER_ID points to the right folder.
  */
 function clickupShowStructure(){
   var ss=SpreadsheetApp.getActiveSpreadsheet();
@@ -506,8 +498,7 @@ function clickupCreateList(){
   var ss=SpreadsheetApp.getActiveSpreadsheet();
   if(!CU_TOKEN){ss.toast('CU_TOKEN not set in Script Properties.','❌');return;}
   ss.toast('Creating '+CU_LIST_NAME+' list...','⏳');
-  var folder;try{folder=findFolder_(CU_FOLDER);}catch(e){ss.toast(e.message,'❌');return;}
-  var list=cuFetch_('POST','/folder/'+folder.id+'/list',{name:CU_LIST_NAME});
+  var list=cuFetch_('POST','/folder/'+CU_FOLDER_ID+'/list',{name:CU_LIST_NAME});
   if(!list||!list.id){ss.toast('List creation failed.','❌');return;}
   PropertiesService.getScriptProperties().setProperty('testing_list_id',list.id);
   Logger.log('Created list: '+list.id);
