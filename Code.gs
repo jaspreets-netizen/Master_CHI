@@ -7,8 +7,8 @@
  * RUN ORDER (first time):
  *   1. Build all trend sheets  (⚙ Master CHI → 📊 Build all trend sheets)
  *   2. Add missing tasks       (function dropdown → clickupAddMissingTasks)
- *   3. Sync data               (⚙ Master CHI → 🔄 Sync data with ClickUp)
- *   4. Enable auto-sync        (⚙ Master CHI → ⏱ Enable daily auto-sync)
+ *   3. Sync data               (function dropdown → clickupUpdateScorecard)
+ *   4. Enable auto-sync        (function dropdown → clickupSetupDailySync)
  *
  * TEST list: Rough-CHI-scorecard (ID hardcoded below)
  * PRODUCTION list: CHI Scorecard — NEVER TOUCH
@@ -73,9 +73,6 @@ function clickupSaveToken() {
 function onOpen() {
   SpreadsheetApp.getUi().createMenu('⚙ Master CHI')
     .addItem('📊 Build all trend sheets', 'buildAllTrends')
-    .addSeparator()
-    .addItem('🔄 Sync data with ClickUp',  'clickupUpdateScorecard')
-    .addItem('⏱ Enable daily auto-sync',   'clickupSetupDailySync')
     .addToUi();
 }
 
@@ -288,7 +285,6 @@ function clickupShowStructure(){
       for(var k=0;k<lists.length;k++)
         Logger.log('    LIST: "'+lists[k].name+'"  id='+lists[k].id);
     }
-    // also lists sitting directly in the space (no folder)
     var spaceLists=cuFetch_('GET','/space/'+sp.id+'/list?archived=false').lists||[];
     for(var j=0;j<spaceLists.length;j++)
       Logger.log('  LIST (no folder): "'+spaceLists[j].name+'"  id='+spaceLists[j].id);
@@ -359,9 +355,8 @@ function readCompleteChiData_() {
   if (!sh) { Logger.log('Complete CHI Data sheet not found — run Build All Trends first.'); return {data:{}, monthLabel:''}; }
   var data = sh.getDataRange().getValues();
   if (data.length < 3) return {data:{}, monthLabel:''};
-  var header = data[1]; // row 2: Site | Score | FEB 26 | MAR 26 ...
+  var header = data[1];
 
-  // Find CHI Score rows to gauge coverage per column
   var chiRows = [];
   for (var r = 2; r < data.length; r++) {
     if (String(data[r][1]).trim() === 'CHI Score') chiRows.push(r);
@@ -388,7 +383,6 @@ function readCompleteChiData_() {
   if (bestCol < 0) return {data:{}, monthLabel:''};
   Logger.log('Complete CHI Data → column ' + bestCol + ' (' + bestLabel + ')');
 
-  // Read all rows; column A has site name only on the first row of each merged block
   var result = {}, currentSite = null;
   for (var r = 2; r < data.length; r++) {
     var siteName = String(data[r][0]).trim();
@@ -406,7 +400,7 @@ function readCompleteChiData_() {
 // CLICKUP SYNC v3
 // ════════════════════════════════════════════════════════
 var FIELD_NAMES = [
-  'Rag Status',           // dropdown: Green / Amber / Red
+  'Rag Status',
   'Performance Value',
   'Solution KPIs',
   'MTBF / MTTR',
@@ -509,14 +503,10 @@ function clickupSetupFields(){
       }else{Logger.log('No ID returned for: '+def.name);failed++;}
     }catch(e){Logger.log('Failed: '+def.name+' → '+e.message);failed++;}}
   saveFieldIds_(fieldIds,ragOptions);
-  ss.toast('✅ Field setup complete\nCreated: '+created+'\nAlready existed: '+skipped+'\nFailed: '+failed+'\nRun "Update Testing Scorecard" next.','✅');
+  ss.toast('✅ Field setup complete\nCreated: '+created+'\nAlready existed: '+skipped+'\nFailed: '+failed,'✅');
   Logger.log('Field IDs: '+JSON.stringify(fieldIds));
 }
 
-/**
- * Run this INSTEAD of clickupSetupFields when you get a 403 permission error.
- * Create the 15 fields manually in ClickUp first, then run this to store their IDs.
- */
 function clickupReadFieldIds(){
   var ss=SpreadsheetApp.getActiveSpreadsheet();
   if(!CU_TOKEN){ss.toast('API token not set. Run clickupSaveToken first.','❌');return;}
@@ -542,9 +532,9 @@ function clickupReadFieldIds(){
   Logger.log('Missing: '+JSON.stringify(missing));
   Logger.log('RAG options: '+JSON.stringify(ragOptions));
   if(missing.length===0){
-    ss.toast('✅ All '+FIELD_NAMES.length+' field IDs stored.\nRun clickupUpdateScorecard next.','✅');
+    ss.toast('✅ All '+FIELD_NAMES.length+' field IDs stored.','✅');
   } else {
-    ss.toast('⚠ Stored what was found.\nStill missing: '+missing.join(', ')+'\nCreate these in ClickUp, then run this again.','⚠');
+    ss.toast('⚠ Still missing: '+missing.join(', '),'⚠');
   }
 }
 
@@ -555,7 +545,7 @@ function clickupUpdateScorecard(){
   ss.toast('Reading Complete CHI Data...','⏳');
   var chiData=readCompleteChiData_();
   if(!chiData.data||Object.keys(chiData.data).length===0){
-    ss.toast('No data found. Run "Build all trend sheets" first.','❌');return;}
+    ss.toast('No data found. Run buildAllTrends first.','❌');return;}
 
   var allKeys=Object.keys(chiData.data);
 
@@ -572,20 +562,16 @@ function clickupUpdateScorecard(){
     var chi=d['CHI Score']||null;
     Logger.log('→ '+task.name+' CHI='+chi);
 
-    // Performance pillar
     setField_(task.id,CU_FIELD_IDS['Performance Value'],    d['Performance Value']||null);
     setField_(task.id,CU_FIELD_IDS['Solution KPIs'],        d['Solution KPIs']||null);
     setField_(task.id,CU_FIELD_IDS['MTBF / MTTR'],          d['MTBF / MTTR']||null);
-    // Experience pillar (sheet label → ClickUp field name differs)
     setField_(task.id,CU_FIELD_IDS['Frowns vs Smiles'],     d['Frown vs Smile']||null);
     setField_(task.id,CU_FIELD_IDS['Sentiment'],            d['Sentiment']||null);
     setField_(task.id,CU_FIELD_IDS['Trust'],                d['Trust']||null);
-    // Business pillar (sheet labels slightly differ)
     setField_(task.id,CU_FIELD_IDS['Throughput Blueprint'], d['Thruput Blueprint']||null);
     setField_(task.id,CU_FIELD_IDS['Outcome Metric'],       d['Outcome Metrics']||null);
     setField_(task.id,CU_FIELD_IDS['Move the Needle'],      d['Move the Needle']||null);
 
-    // Rag Status from CHI Score
     if(chi!==null){
       var optId=CU_RAG_OPTIONS[ragKey_(chi)];
       if(optId)setField_(task.id,CU_FIELD_IDS['Rag Status'],optId);
@@ -595,17 +581,12 @@ function clickupUpdateScorecard(){
   Logger.log('=== DONE: '+updated+' updated, '+skipped+' skipped ===');
 }
 
-/**
- * Adds a task for every site in the Activation sheet that doesn't already
- * exist as a task in the ClickUp list. Safe to re-run — skips existing tasks.
- */
 function clickupAddMissingTasks(){
   var ss=SpreadsheetApp.getActiveSpreadsheet();
   if(!CU_TOKEN){ss.toast('API token not set. Run clickupSaveToken first.','❌');return;}
   ss.toast('Fetching existing tasks...','⏳');
   var list;try{list=findTestingList_();}catch(e){ss.toast(e.message,'❌');return;}
   var tasks=getAllTasks_(list.id);
-  // Build set of existing task names (hard-normalised for comparison)
   var existing={};
   for(var i=0;i<tasks.length;i++) existing[normHard_(tasks[i].name)]=true;
   var sites=getActiveSites_();
@@ -624,12 +605,10 @@ function clickupAddMissingTasks(){
 function clickupDiagnose(){
   var ss=SpreadsheetApp.getActiveSpreadsheet();
   if(!CU_TOKEN){ss.toast('API token not set. Run clickupSaveToken first.','❌');return;}
-  ss.toast('Running diagnostics — check Logs when done...','⏳');
+  ss.toast('Running diagnostics...','⏳');
   var list;try{list=findTestingList_();}catch(e){ss.toast(e.message,'❌');return;}
   Logger.log('=== LIST ===\nName: '+list.name+'  ID: '+list.id);
   Logger.log('=== CUSTOM FIELDS ===\n'+JSON.stringify(cuFetch_('GET','/list/'+list.id+'/field'),null,2));
-  Logger.log('=== STORED FIELD IDs ===\n'+JSON.stringify(loadFieldIds_()));
-  Logger.log('=== STORED RAG OPTIONS ===\n'+JSON.stringify(loadRagOptions_()));
   Logger.log('=== TASK NAMES (first 10) ===');
   var tasks=getAllTasks_(list.id);
   for(var i=0;i<Math.min(10,tasks.length);i++)Logger.log(tasks[i].name+'  id='+tasks[i].id);
@@ -642,7 +621,6 @@ function clickupCreateList(){
   ss.toast('Creating '+CU_LIST_NAME+' list...','⏳');
   var list=cuFetch_('POST','/folder/'+CU_FOLDER_ID+'/list',{name:CU_LIST_NAME});
   if(!list||!list.id){ss.toast('List creation failed.','❌');return;}
-  PropertiesService.getScriptProperties().setProperty('testing_list_id',list.id);
   Logger.log('Created list: '+list.id);
   ss.toast('Creating tasks...','⏳');
   var sites=getActiveSites_(),created=0;
@@ -650,7 +628,7 @@ function clickupCreateList(){
     Utilities.sleep(350);
     try{cuFetch_('POST','/list/'+list.id+'/task',{name:sites[i].name});created++;}
     catch(e){Logger.log('Task failed: '+sites[i].name);}}
-  ss.toast('✅ List created with '+created+' tasks.\nNow run "Setup fields on Testing list".','✅');
+  ss.toast('✅ List created with '+created+' tasks.','✅');
 }
 
 // ════════════════════════════════════════════════════════
