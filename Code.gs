@@ -230,6 +230,35 @@ function findTestingList_(){
     if(lists[i].name===CU_LIST_NAME){props.setProperty('testing_list_id',lists[i].id);return lists[i];}}
   throw new Error('"'+CU_LIST_NAME+'" list not found. Run "Create Testing Scorecard" first.');
 }
+/**
+ * Logs every Space → Folder → List in your workspace.
+ * Run this to find the exact names to put in CU_FOLDER / CU_LIST_NAME.
+ */
+function clickupShowStructure(){
+  var ss=SpreadsheetApp.getActiveSpreadsheet();
+  if(!CU_TOKEN){ss.toast('CU_TOKEN not set in Script Properties.','❌');return;}
+  var spaces=cuFetch_('GET','/team/'+CU_TEAM_ID+'/space?archived=false').spaces;
+  Logger.log('=== CLICKUP WORKSPACE STRUCTURE ===');
+  for(var i=0;i<spaces.length;i++){
+    var sp=spaces[i];
+    Logger.log('SPACE: "'+sp.name+'"  id='+sp.id);
+    var folders=cuFetch_('GET','/space/'+sp.id+'/folder?archived=false').folders;
+    for(var j=0;j<folders.length;j++){
+      var fo=folders[j];
+      Logger.log('  FOLDER: "'+fo.name+'"  id='+fo.id);
+      var lists=cuFetch_('GET','/folder/'+fo.id+'/list').lists;
+      for(var k=0;k<lists.length;k++)
+        Logger.log('    LIST: "'+lists[k].name+'"  id='+lists[k].id);
+    }
+    // also lists sitting directly in the space (no folder)
+    var spaceLists=cuFetch_('GET','/space/'+sp.id+'/list?archived=false').lists||[];
+    for(var j=0;j<spaceLists.length;j++)
+      Logger.log('  LIST (no folder): "'+spaceLists[j].name+'"  id='+spaceLists[j].id);
+  }
+  Logger.log('=== END ===');
+  ss.toast('Done — open Apps Script → View → Logs','✅');
+}
+
 function getAllTasks_(listId){
   var tasks=[],page=0;
   while(true){
