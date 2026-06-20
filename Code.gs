@@ -15,7 +15,7 @@
 var CU_TOKEN     = PropertiesService.getUserProperties().getProperty('CU_TOKEN');
 var CU_TEAM_ID   = '90161459573';
 var CU_FOLDER_ID = '90169480684';  // Customer Success → Health & Growth
-var CU_LIST_NAME = 'CHI Scorecard';
+var CU_LIST_NAME = 'CHI Scorecards';
 
 var CLR = {DB:'#1F4E79',W:'#FFFFFF',P:'#2E75B6',E:'#548235',B:'#BF8F00',
   GY:'#EFEFEF',ME:'#DCEEFB',LBL:'#D9D9D9',SHE:'#B6D7A8',EXG:'#E2EFDA',BZG:'#FFF2CC'};
@@ -576,6 +576,32 @@ function clickupUpdateScorecard(){
     updated++;Utilities.sleep(300);}
   ss.toast('✅ '+updated+' updated, '+skipped+' skipped.\nMonth: '+chiData.monthLabel,'✅ Done');
   Logger.log('=== DONE: '+updated+' updated, '+skipped+' skipped ===');
+}
+
+/**
+ * Adds a task for every site in the Activation sheet that doesn't already
+ * exist as a task in the ClickUp list. Safe to re-run — skips existing tasks.
+ */
+function clickupAddMissingTasks(){
+  var ss=SpreadsheetApp.getActiveSpreadsheet();
+  if(!CU_TOKEN){ss.toast('API token not set. Run clickupSaveToken first.','❌');return;}
+  ss.toast('Fetching existing tasks...','⏳');
+  var list;try{list=findTestingList_();}catch(e){ss.toast(e.message,'❌');return;}
+  var tasks=getAllTasks_(list.id);
+  // Build set of existing task names (hard-normalised for comparison)
+  var existing={};
+  for(var i=0;i<tasks.length;i++) existing[normHard_(tasks[i].name)]=true;
+  var sites=getActiveSites_();
+  var added=0,skipped=0;
+  ss.toast('Adding missing sites...','⏳');
+  for(var i=0;i<sites.length;i++){
+    if(existing[normHard_(sites[i].name)]){skipped++;continue;}
+    Utilities.sleep(350);
+    try{cuFetch_('POST','/list/'+list.id+'/task',{name:sites[i].name});added++;}
+    catch(e){Logger.log('Failed to add: '+sites[i].name+' — '+e.message);}
+  }
+  ss.toast('✅ Added: '+added+' new tasks\nAlready existed: '+skipped,'✅');
+  Logger.log('Added: '+added+', skipped: '+skipped);
 }
 
 function clickupDiagnose(){
