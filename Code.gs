@@ -26,18 +26,20 @@ var DASH_RANGE = '"Dashboard!A1:AZ80"';
 // MENU
 // ════════════════════════════════════════════════════════
 function onOpen() {
-  SpreadsheetApp.getUi().createMenu('⚙ Master CHI')
+  var ui = SpreadsheetApp.getUi();
+  var cuMenu = ui.createMenu('ClickUp')
+    .addItem('1. Create list','pushToClickUp')
+    .addItem('2. Setup fields','setupFieldsOnTestingList')
+    .addItem('3. Read field IDs','readExistingFieldIds')
+    .addItem('4. Update scorecard','updateTestingScorecard')
+    .addSeparator()
+    .addItem('Setup daily sync','setupDailySync')
+    .addItem('Stop daily sync','removeDailySync')
+    .addSeparator()
+    .addItem('Diagnose','diagnoseTestingList');
+  ui.createMenu('⚙ Master CHI')
     .addItem('📊 Build all trend sheets','buildAllTrends')
-    .addSeparator()
-    .addItem('🔗 Create Testing Scorecard list (first run only)','pushToClickUp')
-    .addItem('🔧 Setup fields on Testing list','setupFieldsOnTestingList')
-    .addItem('📥 Read existing field IDs from ClickUp','readExistingFieldIds')
-    .addItem('🔄 Update Testing Scorecard','updateTestingScorecard')
-    .addSeparator()
-    .addItem('⏱ Set up 24-hour auto-sync','setupDailySync')
-    .addItem('⏹ Stop auto-sync','removeDailySync')
-    .addSeparator()
-    .addItem('🔍 Diagnose Testing list fields','diagnoseTestingList')
+    .addSubMenu(cuMenu)
     .addToUi();
 }
 
