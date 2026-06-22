@@ -20,7 +20,11 @@ var CU_TEAM_ID   = '90161459573';
 var CU_FOLDER_ID = '90169480684';  // Customer Success → Health & Growth
 var CU_LIST_NAME = 'Rough CHI Scorecard';   // TEST list — NEVER touch 'CHI Scorecard' (production)
 var CU_LIST_ID   = '901615509118';   // Rough CHI Scorecard — NUMERIC list id (from URL /v/l/li/901615509118)
-var CU_PROD_LIST_NAME = 'CHI Scorecard';   // PRODUCTION — findTestingList_ HARD-REFUSES to operate on this
+var CU_PROD_LIST_NAME = 'CHI Scorecard';   // PRODUCTION — HARD-REFUSE to operate on this
+// CHI History list — month-by-month CHI Score matrix (one number field per calendar month)
+var CU_HISTORY_LIST_NAME = 'Rough CHI History';   // TEST history list — NEVER touch 'CHI History' (production)
+var CU_HISTORY_LIST_ID   = '901615510712';   // Rough CHI History — NUMERIC list id (from URL /v/l/li/901615510712)
+var CU_PROD_HISTORY_NAME = 'CHI History';   // PRODUCTION — HARD-REFUSE to operate on this
 
 // Field UUIDs for Rough CHI Scorecard — CONFIRMED against the live list 2026-06-22
 // (read from /list/901615509118/field; duplicates excluded — primary instances only)
@@ -276,16 +280,16 @@ function resolveFieldIdByName_(listId,name){
   }catch(e){Logger.log('resolveFieldIdByName_ failed: '+e.message);}
   return null;
 }
-function findTestingList_(){
-  var list=cuFetch_('GET','/list/'+CU_LIST_ID);
-  if(!list||!list.id)throw new Error('List '+CU_LIST_ID+' ('+CU_LIST_NAME+') not found via API.');
-  // HARD GUARD: never operate on the production list, no matter what id is configured.
-  var resolvedName=String(list.name||'').trim().toLowerCase();
-  if(resolvedName===CU_PROD_LIST_NAME.toLowerCase())
-    throw new Error('REFUSING: list '+list.id+' is the PRODUCTION list "'+list.name+'". '+
-      'Point CU_LIST_ID at the test list "'+CU_LIST_NAME+'" before running.');
+// Fetch a list by id and HARD-REFUSE if it turns out to be the named production list.
+function fetchListGuarded_(listId,prodName){
+  var list=cuFetch_('GET','/list/'+listId);
+  if(!list||!list.id)throw new Error('List '+listId+' not found via API.');
+  if(prodName && String(list.name||'').trim().toLowerCase()===String(prodName).toLowerCase())
+    throw new Error('REFUSING: list '+list.id+' is the PRODUCTION list "'+list.name+'".');
   return list;
 }
+function findTestingList_(){return fetchListGuarded_(CU_LIST_ID,CU_PROD_LIST_NAME);}
+function findHistoryList_(){return fetchListGuarded_(CU_HISTORY_LIST_ID,CU_PROD_HISTORY_NAME);}
 function clickupShowStructure(){
   var ss=SpreadsheetApp.getActiveSpreadsheet();
   if(!CU_TOKEN){ss.toast('API token not set. Run clickupSaveToken first.','❌');return;}
@@ -409,6 +413,50 @@ function readCompleteChiData_() {
     if (!isNaN(numVal) && numVal > 0) result[currentSite][label] = numVal;
   }
   return {data: result, monthLabel: rm.friendly};
+}
+
+// Converts a Complete CHI Data column header (e.g. 'MAY 26') to the History field
+// name (e.g. 'May 2026'). Returns null for non-month headers.
+function monthHeaderToFriendly_(h){
+  var ABBR=['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
+  var FULL=['January','February','March','April','May','June','July','August',
+            'September','October','November','December'];
+  var parts=String(h).toUpperCase().trim().split(/\s+/);
+  if(parts.length<2)return null;
+  var idx=ABBR.indexOf(parts[0]);if(idx<0)return null;
+  var yy=parseInt(parts[1],10);if(isNaN(yy))return null;
+  return FULL[idx]+' '+(yy<100?2000+yy:yy);
+}
+
+// Reads the CHI Score for every site across ALL month columns of 'Complete CHI Data'.
+// Returns { data:{ siteKey:{ 'May 2026':8.12, ... } }, months:['February 2026', ...] }.
+function readChiHistory_(){
+  var ss=SpreadsheetApp.getActiveSpreadsheet();
+  var sh=ss.getSheetByName('Complete CHI Data');
+  if(!sh){Logger.log('Complete CHI Data sheet not found — run Build All Trends first.');return {data:{},months:[]};}
+  var data=sh.getDataRange().getValues();
+  if(data.length<3)return {data:{},months:[]};
+  var header=data[1];
+  var monthCols=[];
+  for(var c=2;c<header.length;c++){
+    var fr=monthHeaderToFriendly_(header[c]);
+    if(fr)monthCols.push({col:c,friendly:fr});
+  }
+  var result={},currentSite=null;
+  for(var r=2;r<data.length;r++){
+    var siteName=String(data[r][0]).trim();
+    var label=String(data[r][1]).trim();
+    if(siteName)currentSite=siteName.toLowerCase();
+    if(!currentSite)continue;
+    if(!result[currentSite])result[currentSite]={};
+    if(label==='CHI Score'){
+      for(var m=0;m<monthCols.length;m++){
+        var v=parseFloat(data[r][monthCols[m].col]);
+        if(!isNaN(v)&&v>0)result[currentSite][monthCols[m].friendly]=v;
+      }
+    }
+  }
+  return {data:result,months:monthCols.map(function(x){return x.friendly;})};
 }
 
 // ════════════════════════════════════════════════════════
@@ -640,25 +688,76 @@ function clickupUpdateScorecard(){
   Logger.log('=== DONE: '+updated+' updated, '+skipped+' skipped ===');
 }
 
-function clickupAddMissingTasks(){
-  var ss=SpreadsheetApp.getActiveSpreadsheet();
-  if(!CU_TOKEN){ss.toast('API token not set. Run clickupSaveToken first.','❌');return;}
-  ss.toast('Fetching existing tasks...','⏳');
-  var list;try{list=findTestingList_();}catch(e){ss.toast(e.message,'❌');return;}
-  var tasks=getAllTasks_(list.id);
-  var existing={};
+function addMissingTasksToList_(list){
+  var tasks=getAllTasks_(list.id),existing={};
   for(var i=0;i<tasks.length;i++) existing[normHard_(tasks[i].name)]=true;
-  var sites=getActiveSites_();
-  var added=0,skipped=0;
-  ss.toast('Adding missing sites...','⏳');
+  var sites=getActiveSites_(),added=0,skipped=0;
   for(var i=0;i<sites.length;i++){
     if(existing[normHard_(sites[i].name)]){skipped++;continue;}
     Utilities.sleep(350);
     try{cuFetch_('POST','/list/'+list.id+'/task',{name:sites[i].name});added++;}
     catch(e){Logger.log('Failed to add: '+sites[i].name+' — '+e.message);}
   }
-  ss.toast('✅ Added: '+added+' new tasks\nAlready existed: '+skipped,'✅');
-  Logger.log('Added: '+added+', skipped: '+skipped);
+  return {added:added,skipped:skipped};
+}
+function clickupAddMissingTasks(){
+  var ss=SpreadsheetApp.getActiveSpreadsheet();
+  if(!CU_TOKEN){ss.toast('API token not set. Run clickupSaveToken first.','❌');return;}
+  ss.toast('Adding missing sites to '+CU_LIST_NAME+'...','⏳');
+  var list;try{list=findTestingList_();}catch(e){ss.toast(e.message,'❌');return;}
+  var r=addMissingTasksToList_(list);
+  ss.toast('✅ Added: '+r.added+' new tasks\nAlready existed: '+r.skipped,'✅');
+  Logger.log('Scorecard tasks — added: '+r.added+', skipped: '+r.skipped);
+}
+function clickupAddMissingHistoryTasks(){
+  var ss=SpreadsheetApp.getActiveSpreadsheet();
+  if(!CU_TOKEN){ss.toast('API token not set. Run clickupSaveToken first.','❌');return;}
+  ss.toast('Adding missing sites to '+CU_HISTORY_LIST_NAME+'...','⏳');
+  var list;try{list=findHistoryList_();}catch(e){ss.toast(e.message,'❌');return;}
+  var r=addMissingTasksToList_(list);
+  ss.toast('✅ Added: '+r.added+' new tasks\nAlready existed: '+r.skipped,'✅');
+  Logger.log('History tasks — added: '+r.added+', skipped: '+r.skipped);
+}
+
+function clickupUpdateHistory(){
+  var ss=SpreadsheetApp.getActiveSpreadsheet();
+  if(!CU_TOKEN){ss.toast('API token not set. Run clickupSaveToken first.','❌');return;}
+  ss.toast('Reading CHI history...','⏳');
+  var hist=readChiHistory_();
+  if(!hist.data||Object.keys(hist.data).length===0){ss.toast('No data found. Run buildAllTrends first.','❌');return;}
+  var allKeys=Object.keys(hist.data);
+
+  ss.toast('Fetching history tasks...','⏳');
+  var list;try{list=findHistoryList_();}catch(e){ss.toast(e.message,'❌');return;}
+  // Resolve month-field name → id from the live list.
+  var fieldMap={},rawFields=(cuFetch_('GET','/list/'+list.id+'/field').fields)||[];
+  for(var i=0;i<rawFields.length;i++)if(rawFields[i].name)fieldMap[String(rawFields[i].name).trim()]=rawFields[i].id;
+  var missingFields=[];
+  for(var m=0;m<hist.months.length;m++)if(!fieldMap[hist.months[m]])missingFields.push(hist.months[m]);
+  if(missingFields.length)Logger.log('History fields not found on list (skipped): '+missingFields.join(', '));
+
+  var tasks=getAllTasks_(list.id);
+  Logger.log('History tasks: '+tasks.length+'  months: '+hist.months.join(', '));
+  ss.toast('Updating '+tasks.length+' history tasks...','⏳');
+  var updated=0,skipped=0;
+  for(var t=0;t<tasks.length;t++){
+    var task=tasks[t],matchKey=matchSite_(task.name,allKeys);
+    if(!matchKey){Logger.log('No match: "'+task.name+'"');skipped++;continue;}
+    var d=hist.data[matchKey]||{};
+    var cur={},cfs=task.custom_fields||[];
+    for(var cf=0;cf<cfs.length;cf++){var fv=cfs[cf];
+      cur[fv.id]=(fv.value!==undefined&&fv.value!==null&&fv.value!=='');}
+    for(var mm=0;mm<hist.months.length;mm++){
+      var fname=hist.months[mm],fid=fieldMap[fname];
+      if(!fid)continue;
+      var val=d[fname];if(val===undefined)val=null;
+      applyField_(task.id,fid,val,cur[fid]);
+    }
+    Logger.log('→ '+task.name+' history updated');
+    updated++;
+  }
+  ss.toast('✅ History: '+updated+' updated, '+skipped+' skipped.','✅ Done');
+  Logger.log('=== HISTORY DONE: '+updated+' updated, '+skipped+' skipped ===');
 }
 
 function clickupDiagnose(){
@@ -693,16 +792,22 @@ function clickupCreateList(){
 // ════════════════════════════════════════════════════════
 // 24-HOUR AUTO-SYNC
 // ════════════════════════════════════════════════════════
+var DAILY_SYNC_HANDLERS=['clickupDailySync','clickupUpdateScorecard'];  // current + legacy
+// Daily trigger target: refresh both the scorecard and the history list.
+function clickupDailySync(){
+  clickupUpdateScorecard();
+  clickupUpdateHistory();
+}
 function clickupSetupDailySync(){
   var triggers=ScriptApp.getProjectTriggers();
   for(var i=0;i<triggers.length;i++)
-    if(triggers[i].getHandlerFunction()==='clickupUpdateScorecard')ScriptApp.deleteTrigger(triggers[i]);
-  ScriptApp.newTrigger('clickupUpdateScorecard').timeBased().everyDays(1).atHour(3).create();
-  SpreadsheetApp.getActiveSpreadsheet().toast('✅ Auto-sync active — runs daily at 3 AM.','✅');
+    if(DAILY_SYNC_HANDLERS.indexOf(triggers[i].getHandlerFunction())>=0)ScriptApp.deleteTrigger(triggers[i]);
+  ScriptApp.newTrigger('clickupDailySync').timeBased().everyDays(1).atHour(3).create();
+  SpreadsheetApp.getActiveSpreadsheet().toast('✅ Auto-sync active — scorecard + history daily at 3 AM (New York).','✅');
 }
 function clickupStopDailySync(){
   var triggers=ScriptApp.getProjectTriggers(),removed=0;
   for(var i=0;i<triggers.length;i++)
-    if(triggers[i].getHandlerFunction()==='clickupUpdateScorecard'){ScriptApp.deleteTrigger(triggers[i]);removed++;}
+    if(DAILY_SYNC_HANDLERS.indexOf(triggers[i].getHandlerFunction())>=0){ScriptApp.deleteTrigger(triggers[i]);removed++;}
   SpreadsheetApp.getActiveSpreadsheet().toast(removed>0?'✅ Auto-sync stopped.':'No trigger found.',removed>0?'✅':'ℹ️');
 }
