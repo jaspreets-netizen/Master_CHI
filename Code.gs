@@ -22,24 +22,30 @@ var CU_LIST_NAME = 'Rough CHI Scorecard';   // TEST list — NEVER touch 'CHI Sc
 var CU_LIST_ID   = '901615509118';   // Rough CHI Scorecard — NUMERIC list id (from URL /v/l/li/901615509118)
 var CU_PROD_LIST_NAME = 'CHI Scorecard';   // PRODUCTION — findTestingList_ HARD-REFUSES to operate on this
 
-// Field UUIDs for Rough-CHI-scorecard (confirmed from ClickUp AI, 2026-06-20)
+// Field UUIDs for Rough CHI Scorecard — CONFIRMED against the live list 2026-06-22
+// (read from /list/901615509118/field; duplicates excluded — primary instances only)
 var CU_FIELD_IDS = {
-  'Rag Status':           'ddcb078c-86b5-430a-91b4-00666b6c28b4',
-  'Performance Value':    '72a81da4-a90b-4aff-a22c-cf0d89e10e3f',
-  'Solution KPIs':        '9aab35b1-3d7a-4c73-8bba-98be2938f0db',
-  'MTBF / MTTR':          '8e0362e9-274e-4a49-8ede-9f7f5b74c571',
-  'Frowns vs Smiles':     'e73ec803-997d-44b8-b4ba-8b48ac902b1b',
-  'Sentiment':            'c4a2486a-f131-49ee-aa85-128beb7b7621',
-  'Trust':                '05da7d07-b7fb-4f3a-876d-740b3e591bad',
-  'Throughput Blueprint': 'bdb6c737-ac55-4214-98ea-6918f7c3ddd5',
-  'Outcome Metric':       '1581a372-d309-405d-9200-36465aee3bba',
-  'Move the Needle':      'a3187725-5742-4210-a55c-5f5643764079'
+  'CEM Name':             'bb8fb32c-f667-4f72-8aa3-282f6c3aaae1',
+  'CHI Score':            '9e077747-0061-43b1-b0f0-790889fff41d',
+  'Performance Value':    '82334a33-03cb-4d5f-ad3e-1469faf85aee',
+  'Solution KPIs':        '3edd45c5-744e-45f3-bf36-da6f915c6da7',
+  'Uptime':               'e95fc07b-a4e1-433f-a9b8-f7d20547aca2',
+  'MTBF / MTTR':          '3a2818f2-9de4-4a14-ac92-07984e5f33e5',
+  'Experience Value':     '110f56cc-6cd1-4aa0-93ed-8d109b4c17d9',
+  'Frowns vs Smiles':     '60c4f5dc-49e4-41a1-9b4c-f2216386d4c0',
+  'Sentiment':            '61bb0afc-6197-4f94-849d-8ce57085fdfd',
+  'Trust':                '6803010c-7c09-4962-9547-c53989c527f0',
+  'Business Value':       '864eb038-86c7-41a8-855e-539b6113c791',
+  'Throughput Blueprint': 'ec4cbb39-852a-4ae2-9c7f-fa136534efb9',
+  'Outcome Metric':       'b87534cc-30ad-44ab-9fd4-9203244972b0',
+  'Move the Needle':      'f911da72-28d9-45bc-b5bb-d38a76b0ed2e',
+  'Rag Status':           '0da35124-38e4-4604-b1ac-f1be25d57860'
 };
-// Dropdown option UUIDs for the Rag Status field
+// Dropdown option UUIDs for the Rag Status field — CONFIRMED 2026-06-22
 var CU_RAG_OPTIONS = {
-  'Green': '29f8b4ca-d1cb-4c3d-8f54-b8c917297443',
-  'Amber': '35a5bef3-d708-485e-afd5-0087a0021f0c',
-  'Red':   'cc8c391d-887f-4dd7-ad51-577db9f0646d'
+  'Green': '0e6151c4-1beb-46a2-9cc0-b909db09f130',
+  'Amber': 'ff68b87b-cb58-4677-8276-9a8e654a08bb',
+  'Red':   '5c32adab-145a-4394-9a23-33723dff797f'
 };
 
 var CLR = {DB:'#1F4E79',W:'#FFFFFF',P:'#2E75B6',E:'#548235',B:'#BF8F00',
@@ -546,10 +552,8 @@ function clickupUpdateScorecard(){
 
   var allKeys=Object.keys(chiData.data);
 
-  // Prefer field ids resolved from the live list (clickupSetupFields/clickupReadFieldIds);
-  // fall back to the hardcoded constants only if nothing has been stored yet.
-  var FIELD_IDS=loadFieldIds_()||CU_FIELD_IDS;
-  var RAG_OPTS=loadRagOptions_();if(!RAG_OPTS||!Object.keys(RAG_OPTS).length)RAG_OPTS=CU_RAG_OPTIONS;
+  // CU_FIELD_IDS / CU_RAG_OPTIONS are confirmed against the live list — use them directly.
+  var FIELD_IDS=CU_FIELD_IDS, RAG_OPTS=CU_RAG_OPTIONS;
 
   ss.toast('Fetching tasks...','⏳');
   var list=findTestingList_(),tasks=getAllTasks_(list.id);
