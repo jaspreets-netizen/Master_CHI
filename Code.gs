@@ -18,13 +18,15 @@
 var CU_TOKEN     = PropertiesService.getUserProperties().getProperty('CU_TOKEN');
 var CU_TEAM_ID   = '90161459573';
 var CU_FOLDER_ID = '90169480684';  // Customer Success → Health & Growth
-var CU_LIST_NAME = 'Rough CHI Scorecard';   // TEST list — NEVER touch 'CHI Scorecard' (production)
-var CU_LIST_ID   = '901615509118';   // Rough CHI Scorecard — NUMERIC list id (from URL /v/l/li/901615509118)
-var CU_PROD_LIST_NAME = 'CHI Scorecard';   // PRODUCTION — HARD-REFUSE to operate on this
+var CU_LIST_NAME = 'Rough CHI Scorecard';   // current name (informational only — targeting is by ID)
+var CU_LIST_ID   = '901615509118';   // Scorecard list — NUMERIC id (STABLE across renames)
 // CHI History list — month-by-month CHI Score matrix (one number field per calendar month)
-var CU_HISTORY_LIST_NAME = 'Rough CHI History';   // TEST history list — NEVER touch 'CHI History' (production)
-var CU_HISTORY_LIST_ID   = '901615510712';   // Rough CHI History — NUMERIC list id (from URL /v/l/li/901615510712)
-var CU_PROD_HISTORY_NAME = 'CHI History';   // PRODUCTION — HARD-REFUSE to operate on this
+var CU_HISTORY_LIST_NAME = 'Rough CHI History';   // current name (informational only)
+var CU_HISTORY_LIST_ID   = '901615510712';   // History list — NUMERIC id (STABLE across renames)
+// Safety: numeric ids of PRODUCTION lists to NEVER write to. Targeting is by the IDs
+// above (which don't change when you rename a list), so renaming the Rough lists is safe.
+// Optionally add the real production list ids here for an extra hard block.
+var CU_PROD_LIST_IDS = [];
 
 // Field UUIDs for Rough CHI Scorecard — CONFIRMED against the live list 2026-06-22
 // (read from /list/901615509118/field; duplicates excluded — primary instances only)
@@ -84,7 +86,21 @@ function clickupSaveToken() {
 function onOpen() {
   SpreadsheetApp.getUi().createMenu('⚙ Master CHI')
     .addItem('📊 Build all trend sheets', 'buildAllTrends')
+    .addItem('🔄 Sync to ClickUp now', 'clickupSyncNow')
     .addToUi();
+}
+
+// One-click full sync: ensure every site has a task, then push scorecard +
+// history data to both ClickUp lists. Also runs automatically every 24h.
+function clickupSyncNow(){
+  var ss=SpreadsheetApp.getActiveSpreadsheet();
+  if(!CU_TOKEN){ss.toast('API token not set. Run clickupSaveToken first.','❌');return;}
+  ss.toast('Syncing to ClickUp (scorecard + history)...','⏳');
+  try{addMissingTasksToList_(findTestingList_());}catch(e){Logger.log('add scorecard tasks: '+e.message);}
+  try{addMissingTasksToList_(findHistoryList_());}catch(e){Logger.log('add history tasks: '+e.message);}
+  clickupUpdateScorecard();
+  clickupUpdateHistory();
+  ss.toast('✅ ClickUp sync complete (scorecard + history).','✅');
 }
 
 // ════════════════════════════════════════════════════════
@@ -280,16 +296,18 @@ function resolveFieldIdByName_(listId,name){
   }catch(e){Logger.log('resolveFieldIdByName_ failed: '+e.message);}
   return null;
 }
-// Fetch a list by id and HARD-REFUSE if it turns out to be the named production list.
-function fetchListGuarded_(listId,prodName){
+// Fetch a list by id; HARD-REFUSE only if the id is on the production denylist.
+// (ID-based, not name-based, so renaming the Rough lists never breaks or misfires.)
+function fetchListGuarded_(listId){
+  for(var i=0;i<CU_PROD_LIST_IDS.length;i++)
+    if(String(CU_PROD_LIST_IDS[i])===String(listId))
+      throw new Error('REFUSING: list '+listId+' is flagged as PRODUCTION (CU_PROD_LIST_IDS).');
   var list=cuFetch_('GET','/list/'+listId);
   if(!list||!list.id)throw new Error('List '+listId+' not found via API.');
-  if(prodName && String(list.name||'').trim().toLowerCase()===String(prodName).toLowerCase())
-    throw new Error('REFUSING: list '+list.id+' is the PRODUCTION list "'+list.name+'".');
   return list;
 }
-function findTestingList_(){return fetchListGuarded_(CU_LIST_ID,CU_PROD_LIST_NAME);}
-function findHistoryList_(){return fetchListGuarded_(CU_HISTORY_LIST_ID,CU_PROD_HISTORY_NAME);}
+function findTestingList_(){return fetchListGuarded_(CU_LIST_ID);}
+function findHistoryList_(){return fetchListGuarded_(CU_HISTORY_LIST_ID);}
 function clickupShowStructure(){
   var ss=SpreadsheetApp.getActiveSpreadsheet();
   if(!CU_TOKEN){ss.toast('API token not set. Run clickupSaveToken first.','❌');return;}
@@ -793,11 +811,8 @@ function clickupCreateList(){
 // 24-HOUR AUTO-SYNC
 // ════════════════════════════════════════════════════════
 var DAILY_SYNC_HANDLERS=['clickupDailySync','clickupUpdateScorecard'];  // current + legacy
-// Daily trigger target: refresh both the scorecard and the history list.
-function clickupDailySync(){
-  clickupUpdateScorecard();
-  clickupUpdateHistory();
-}
+// Daily trigger target — same full sync as the menu's "Sync to ClickUp now".
+function clickupDailySync(){clickupSyncNow();}
 function clickupSetupDailySync(){
   var triggers=ScriptApp.getProjectTriggers();
   for(var i=0;i<triggers.length;i++)
