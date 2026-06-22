@@ -25,8 +25,8 @@ var CU_HISTORY_LIST_NAME = 'Rough CHI History';   // current name (informational
 var CU_HISTORY_LIST_ID   = '901615510712';   // History list — NUMERIC id (STABLE across renames)
 // Safety: numeric ids of PRODUCTION lists to NEVER write to. Targeting is by the IDs
 // above (which don't change when you rename a list), so renaming the Rough lists is safe.
-// Optionally add the real production list ids here for an extra hard block.
-var CU_PROD_LIST_IDS = [];
+// These are the real production lists — a hard block against accidental misconfiguration.
+var CU_PROD_LIST_IDS = ['901614388515','901614779350'];  // CHI Scorecard (prod), CHI History (prod)
 
 // Field UUIDs for Rough CHI Scorecard — CONFIRMED against the live list 2026-06-22
 // (read from /list/901615509118/field; duplicates excluded — primary instances only)
@@ -90,17 +90,26 @@ function onOpen() {
     .addToUi();
 }
 
-// One-click full sync: ensure every site has a task, then push scorecard +
-// history data to both ClickUp lists. Also runs automatically every 24h.
+// One-click full MIRROR sync of the Google Sheet to both ClickUp lists:
+//   1) add a task for every active site, 2) push scorecard + history data,
+//   3) delete orphan tasks for sites removed from the sheet. Also runs every 24h.
 function clickupSyncNow(){
   var ss=SpreadsheetApp.getActiveSpreadsheet();
   if(!CU_TOKEN){ss.toast('API token not set. Run clickupSaveToken first.','❌');return;}
+  var sites;try{sites=getActiveSites_();}catch(e){ss.toast(e.message,'❌');return;}
+  var siteKeys=sites.map(function(s){return s.name.toLowerCase();});
   ss.toast('Syncing to ClickUp (scorecard + history)...','⏳');
+  // 1) ensure tasks exist for every active site
   try{addMissingTasksToList_(findTestingList_());}catch(e){Logger.log('add scorecard tasks: '+e.message);}
   try{addMissingTasksToList_(findHistoryList_());}catch(e){Logger.log('add history tasks: '+e.message);}
+  // 2) push data
   clickupUpdateScorecard();
   clickupUpdateHistory();
-  ss.toast('✅ ClickUp sync complete (scorecard + history).','✅');
+  // 3) prune orphan tasks (sites removed from the sheet) — true mirror
+  var pruned=0;
+  try{pruned+=pruneListToActiveSites_(findTestingList_(),siteKeys);}catch(e){Logger.log('prune scorecard: '+e.message);}
+  try{pruned+=pruneListToActiveSites_(findHistoryList_(),siteKeys);}catch(e){Logger.log('prune history: '+e.message);}
+  ss.toast('✅ ClickUp sync complete (scorecard + history). Pruned '+pruned+' orphan task(s).','✅');
 }
 
 // ════════════════════════════════════════════════════════
@@ -717,6 +726,20 @@ function addMissingTasksToList_(list){
     catch(e){Logger.log('Failed to add: '+sites[i].name+' — '+e.message);}
   }
   return {added:added,skipped:skipped};
+}
+// Mirror deletions: permanently delete any task whose name matches no active site.
+// SAFETY: refuses to prune when siteKeys is empty (e.g. Activation sheet unreadable),
+// so a bad read can never wipe the whole list.
+function pruneListToActiveSites_(list,siteKeys){
+  if(!siteKeys||siteKeys.length===0){Logger.log('Prune skipped for list '+list.id+' — no active sites (safety guard).');return 0;}
+  var tasks=getAllTasks_(list.id),deleted=0;
+  for(var i=0;i<tasks.length;i++){
+    if(matchSite_(tasks[i].name,siteKeys))continue;   // matches an active site → keep
+    Utilities.sleep(200);
+    try{cuFetch_('DELETE','/task/'+tasks[i].id);Logger.log('Pruned orphan task: "'+tasks[i].name+'" id='+tasks[i].id);deleted++;}
+    catch(e){Logger.log('Prune failed: "'+tasks[i].name+'" — '+e.message);}
+  }
+  return deleted;
 }
 function clickupAddMissingTasks(){
   var ss=SpreadsheetApp.getActiveSpreadsheet();
