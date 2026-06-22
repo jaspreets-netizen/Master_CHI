@@ -421,10 +421,10 @@ function readCompleteChiData_() {
 
   var targetCol = -1;
   for (var c = 2; c < header.length; c++) {
-    if (String(header[c]).trim().toUpperCase() === rm.short) { targetCol = c; break; }
+    if (monthHeaderToFriendly_(header[c]) === rm.friendly) { targetCol = c; break; }
   }
   if (targetCol < 0) {
-    Logger.log('Complete CHI Data: reporting-month column "' + rm.short + '" not found — board will show blank for ' + rm.friendly + '.');
+    Logger.log('Complete CHI Data: reporting-month column for "' + rm.friendly + '" not found — board will show blank.');
     return {data:{}, monthLabel: rm.friendly};
   }
   Logger.log('Complete CHI Data → reporting month ' + rm.friendly + ' (column ' + targetCol + ')');
@@ -442,12 +442,17 @@ function readCompleteChiData_() {
   return {data: result, monthLabel: rm.friendly};
 }
 
-// Converts a Complete CHI Data column header (e.g. 'MAY 26') to the History field
-// name (e.g. 'May 2026'). Returns null for non-month headers.
+// Converts a Complete CHI Data column header to the friendly month label 'May 2026'.
+// Handles BOTH a date-typed cell (Sheets auto-parses 'MAY 26' into a Date) and the
+// literal string 'MAY 26'. Returns null for non-month headers.
 function monthHeaderToFriendly_(h){
-  var ABBR=['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
   var FULL=['January','February','March','April','May','June','July','August',
             'September','October','November','December'];
+  if(Object.prototype.toString.call(h)==='[object Date]'){
+    if(isNaN(h.getTime()))return null;
+    return FULL[h.getMonth()]+' '+h.getFullYear();
+  }
+  var ABBR=['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
   var parts=String(h).toUpperCase().trim().split(/\s+/);
   if(parts.length<2)return null;
   var idx=ABBR.indexOf(parts[0]);if(idx<0)return null;
@@ -466,7 +471,7 @@ function readChiHistory_(){
   var header=data[1];
   var monthCols=[];
   for(var c=2;c<header.length;c++){
-    var fr=monthHeaderToFriendly_(header[c]);
+    var fr=monthHeaderToFriendly_(header[c]);   // handles date-typed and string headers
     if(fr)monthCols.push({col:c,friendly:fr});
   }
   var result={},currentSite=null;
