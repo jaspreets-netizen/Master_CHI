@@ -101,18 +101,36 @@ function clickupSyncNow(){
   if(!CU_TOKEN){ss.toast('API token not set. Run clickupSaveToken first.','❌');return;}
   var sites;try{sites=getActiveSites_();}catch(e){ss.toast(e.message,'❌');return;}
   var siteKeys=sites.map(function(s){return s.name.toLowerCase();});
+  var rm=reportingMonth_();
   ss.toast('Syncing to ClickUp (scorecard + history)...','⏳');
+  var report=[];
   // 1) ensure tasks exist for every active site
-  try{addMissingTasksToList_(findTestingList_());}catch(e){Logger.log('add scorecard tasks: '+e.message);}
-  try{addMissingTasksToList_(findHistoryList_());}catch(e){Logger.log('add history tasks: '+e.message);}
-  // 2) push data
-  clickupUpdateScorecard();
-  clickupUpdateHistory();
+  try{addMissingTasksToList_(findTestingList_()).added.forEach(function(n){report.push('+ Added to Scorecard: '+n);});}catch(e){Logger.log('add scorecard tasks: '+e.message);}
+  try{addMissingTasksToList_(findHistoryList_()).added.forEach(function(n){report.push('+ Added to History: '+n);});}catch(e){Logger.log('add history tasks: '+e.message);}
+  // 2) push data (each appends its per-site change lines to report)
+  clickupUpdateScorecard(report);
+  clickupUpdateHistory(report);
   // 3) prune orphan tasks (sites removed from the sheet) — true mirror
-  var pruned=0;
-  try{pruned+=pruneListToActiveSites_(findTestingList_(),siteKeys);}catch(e){Logger.log('prune scorecard: '+e.message);}
-  try{pruned+=pruneListToActiveSites_(findHistoryList_(),siteKeys);}catch(e){Logger.log('prune history: '+e.message);}
-  ss.toast('✅ ClickUp sync complete (scorecard + history). Pruned '+pruned+' orphan task(s).','✅');
+  try{pruneListToActiveSites_(findTestingList_(),siteKeys).forEach(function(n){report.push('− Removed from Scorecard: '+n);});}catch(e){Logger.log('prune scorecard: '+e.message);}
+  try{pruneListToActiveSites_(findHistoryList_(),siteKeys).forEach(function(n){report.push('− Removed from History: '+n);});}catch(e){Logger.log('prune history: '+e.message);}
+  ss.toast('✅ Sync complete — '+report.length+' change(s).','✅');
+  showSyncReport_('ClickUp Sync — '+rm.friendly,report);
+}
+// Show a copyable summary of everything that changed this sync. Uses a modal dialog
+// (selectable/copyable); on the background trigger there's no UI, so it just logs.
+function showSyncReport_(title,lines){
+  var body=lines.length?lines.join('\n'):'No changes — both lists were already up to date.';
+  var text=title+'\n\n'+body+'\n\n'+lines.length+' change(s).';
+  Logger.log(text);
+  try{
+    var safe=text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    var html=HtmlService.createHtmlOutput(
+      '<div style="font-family:Arial,sans-serif;margin:4px">'+
+      '<textarea readonly onclick="this.select()" style="width:100%;height:340px;font-family:monospace;font-size:12px;white-space:pre;box-sizing:border-box">'+safe+'</textarea>'+
+      '<p style="font-size:11px;color:#666;margin:6px 2px 0">Click in the box, then Ctrl/Cmd-A to select all and Ctrl/Cmd-C to copy.</p>'+
+      '</div>').setWidth(560).setHeight(420);
+    SpreadsheetApp.getUi().showModalDialog(html,title);
+  }catch(e){/* no UI context (background trigger) — already logged above */}
 }
 
 // ════════════════════════════════════════════════════════
@@ -496,15 +514,16 @@ function valuesEqual_(a,b){
 // avoid needless API calls: write only when changed, DELETE only when clearing a value
 // that exists. This is what keeps routine syncs fast.
 function applyField_(taskId,fieldId,value,curRaw){
-  if(!fieldId)return;
+  if(!fieldId)return null;
   var newEmpty=(value===null||value===undefined||value==='');
   var curEmpty=(curRaw===undefined||curRaw===null||curRaw==='');
-  if(newEmpty){if(!curEmpty)clearField_(taskId,fieldId);return;}
-  if(!curEmpty&&valuesEqual_(curRaw,value))return;   // unchanged → skip
+  if(newEmpty){if(!curEmpty){clearField_(taskId,fieldId);return 'clear';}return null;}
+  if(!curEmpty&&valuesEqual_(curRaw,value))return null;   // unchanged → skip
   setField_(taskId,fieldId,value);
+  return curEmpty?'set':'update';
 }
 
-function clickupUpdateScorecard(){
+function clickupUpdateScorecard(report){
   var ss=SpreadsheetApp.getActiveSpreadsheet();
   if(!CU_TOKEN){ss.toast('API token not set. Run clickupSaveToken first.','❌');return;}
 
@@ -536,51 +555,53 @@ function clickupUpdateScorecard(){
     var cur={},cfs=task.custom_fields||[];
     for(var cf=0;cf<cfs.length;cf++){var fv=cfs[cf];cur[fv.id]=fv.value;}
 
-    // Stamp the reporting month on every task.
-    applyField_(task.id,monthFieldId,chiData.monthLabel,cur[monthFieldId]);
+    // Track which fields actually changed for this task.
+    var changed=[];
+    if(applyField_(task.id,monthFieldId,chiData.monthLabel,cur[monthFieldId]))changed.push('Month');
 
     // Metric fields — set when present, blank when missing.
     for(var mi=0;mi<METRIC_MAP.length;mi++){
       var fid=FIELD_IDS[METRIC_MAP[mi][0]];if(!fid)continue;
       var val=d[METRIC_MAP[mi][1]];if(val===undefined)val=null;
-      applyField_(task.id,fid,val,cur[fid]);}
+      if(applyField_(task.id,fid,val,cur[fid]))changed.push(METRIC_MAP[mi][0]);}
 
     // RAG status derived from CHI; blank it when there's no CHI for this month.
     var ragId=FIELD_IDS['Rag Status'];
     if(chi!==null){
       var optId=RAG_OPTS[ragKey_(chi)];
-      if(optId)applyField_(task.id,ragId,optId,cur[ragId]);
+      if(optId){if(applyField_(task.id,ragId,optId,cur[ragId]))changed.push('Rag Status');}
       else Logger.log('  RAG option not found for: '+ragKey_(chi));
-    }else applyField_(task.id,ragId,null,cur[ragId]);
+    }else if(applyField_(task.id,ragId,null,cur[ragId]))changed.push('Rag Status');
 
-    Logger.log('→ '+task.name+'  CHI='+chi+'  ('+chiData.monthLabel+')');
-    updated++;}
-  ss.toast('✅ '+updated+' updated, '+skipped+' skipped.\nMonth: '+chiData.monthLabel,'✅ Done');
-  Logger.log('=== DONE: '+updated+' updated, '+skipped+' skipped ===');
+    if(changed.length){if(report)report.push('Scorecard · '+task.name+': '+changed.join(', '));updated++;}
+    Logger.log('→ '+task.name+'  CHI='+chi+(changed.length?'  changed: '+changed.join(','):'  (no change)'));
+  }
+  ss.toast('✅ Scorecard: '+updated+' task(s) changed, '+skipped+' unmatched.\nMonth: '+chiData.monthLabel,'✅ Done');
+  Logger.log('=== SCORECARD DONE: '+updated+' changed, '+skipped+' unmatched ===');
 }
 
 function addMissingTasksToList_(list){
   var tasks=getAllTasks_(list.id),existing={};
   for(var i=0;i<tasks.length;i++) existing[normHard_(tasks[i].name)]=true;
-  var sites=getActiveSites_(),added=0,skipped=0;
+  var sites=getActiveSites_(),added=[],skipped=0;
   for(var i=0;i<sites.length;i++){
     if(existing[normHard_(sites[i].name)]){skipped++;continue;}
     Utilities.sleep(350);
-    try{cuFetch_('POST','/list/'+list.id+'/task',{name:sites[i].name});added++;}
+    try{cuFetch_('POST','/list/'+list.id+'/task',{name:sites[i].name});added.push(sites[i].name);}
     catch(e){Logger.log('Failed to add: '+sites[i].name+' — '+e.message);}
   }
   return {added:added,skipped:skipped};
 }
 // Mirror deletions: permanently delete any task whose name matches no active site.
 // SAFETY: refuses to prune when siteKeys is empty (e.g. Activation sheet unreadable),
-// so a bad read can never wipe the whole list.
+// so a bad read can never wipe the whole list. Returns the list of deleted task names.
 function pruneListToActiveSites_(list,siteKeys){
-  if(!siteKeys||siteKeys.length===0){Logger.log('Prune skipped for list '+list.id+' — no active sites (safety guard).');return 0;}
-  var tasks=getAllTasks_(list.id),deleted=0;
+  if(!siteKeys||siteKeys.length===0){Logger.log('Prune skipped for list '+list.id+' — no active sites (safety guard).');return [];}
+  var tasks=getAllTasks_(list.id),deleted=[];
   for(var i=0;i<tasks.length;i++){
     if(matchSite_(tasks[i].name,siteKeys))continue;   // matches an active site → keep
     Utilities.sleep(200);
-    try{cuFetch_('DELETE','/task/'+tasks[i].id);Logger.log('Pruned orphan task: "'+tasks[i].name+'" id='+tasks[i].id);deleted++;}
+    try{cuFetch_('DELETE','/task/'+tasks[i].id);Logger.log('Pruned orphan task: "'+tasks[i].name+'" id='+tasks[i].id);deleted.push(tasks[i].name);}
     catch(e){Logger.log('Prune failed: "'+tasks[i].name+'" — '+e.message);}
   }
   return deleted;
@@ -591,8 +612,8 @@ function clickupAddMissingTasks(){
   ss.toast('Adding missing sites to '+CU_LIST_NAME+'...','⏳');
   var list;try{list=findTestingList_();}catch(e){ss.toast(e.message,'❌');return;}
   var r=addMissingTasksToList_(list);
-  ss.toast('✅ Added: '+r.added+' new tasks\nAlready existed: '+r.skipped,'✅');
-  Logger.log('Scorecard tasks — added: '+r.added+', skipped: '+r.skipped);
+  ss.toast('✅ Added: '+r.added.length+' new tasks\nAlready existed: '+r.skipped,'✅');
+  Logger.log('Scorecard tasks — added: '+r.added.length+', skipped: '+r.skipped);
 }
 function clickupAddMissingHistoryTasks(){
   var ss=SpreadsheetApp.getActiveSpreadsheet();
@@ -600,11 +621,11 @@ function clickupAddMissingHistoryTasks(){
   ss.toast('Adding missing sites to '+CU_HISTORY_LIST_NAME+'...','⏳');
   var list;try{list=findHistoryList_();}catch(e){ss.toast(e.message,'❌');return;}
   var r=addMissingTasksToList_(list);
-  ss.toast('✅ Added: '+r.added+' new tasks\nAlready existed: '+r.skipped,'✅');
-  Logger.log('History tasks — added: '+r.added+', skipped: '+r.skipped);
+  ss.toast('✅ Added: '+r.added.length+' new tasks\nAlready existed: '+r.skipped,'✅');
+  Logger.log('History tasks — added: '+r.added.length+', skipped: '+r.skipped);
 }
 
-function clickupUpdateHistory(){
+function clickupUpdateHistory(report){
   var ss=SpreadsheetApp.getActiveSpreadsheet();
   if(!CU_TOKEN){ss.toast('API token not set. Run clickupSaveToken first.','❌');return;}
   ss.toast('Reading CHI history...','⏳');
@@ -631,17 +652,18 @@ function clickupUpdateHistory(){
     var d=hist.data[matchKey]||{};
     var cur={},cfs=task.custom_fields||[];
     for(var cf=0;cf<cfs.length;cf++){var fv=cfs[cf];cur[fv.id]=fv.value;}
+    var changedM=[];
     for(var mm=0;mm<hist.months.length;mm++){
       var fname=hist.months[mm],fid=fieldMap[fname];
       if(!fid)continue;
       var val=d[fname];if(val===undefined)val=null;
-      applyField_(task.id,fid,val,cur[fid]);
+      if(applyField_(task.id,fid,val,cur[fid]))changedM.push(fname);
     }
-    Logger.log('→ '+task.name+' history updated');
-    updated++;
+    if(changedM.length){if(report)report.push('History · '+task.name+': '+changedM.join(', '));updated++;}
+    Logger.log('→ '+task.name+(changedM.length?' history changed: '+changedM.join(','):' history (no change)'));
   }
-  ss.toast('✅ History: '+updated+' updated, '+skipped+' skipped.','✅ Done');
-  Logger.log('=== HISTORY DONE: '+updated+' updated, '+skipped+' skipped ===');
+  ss.toast('✅ History: '+updated+' task(s) changed, '+skipped+' unmatched.','✅ Done');
+  Logger.log('=== HISTORY DONE: '+updated+' changed, '+skipped+' unmatched ===');
 }
 
 function clickupDiagnose(){
