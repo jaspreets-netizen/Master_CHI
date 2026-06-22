@@ -265,7 +265,16 @@ function cuFetch_(method,endpoint,payload){
   var res=UrlFetchApp.fetch('https://api.clickup.com/api/v2'+endpoint,options);
   var code=res.getResponseCode(),text=res.getContentText();
   if(code<200||code>=300)throw new Error('ClickUp '+code+': '+text.substring(0,200));
-  return JSON.parse(text);
+  return text?JSON.parse(text):{};
+}
+// Resolve a custom-field id by its exact name (used for the 'Month' field, which
+// lives on the list but is not in the hardcoded CU_FIELD_IDS map).
+function resolveFieldIdByName_(listId,name){
+  try{
+    var fields=(cuFetch_('GET','/list/'+listId+'/field').fields)||[];
+    for(var i=0;i<fields.length;i++)if(String(fields[i].name).trim()===name)return fields[i].id;
+  }catch(e){Logger.log('resolveFieldIdByName_ failed: '+e.message);}
+  return null;
 }
 function findTestingList_(){
   var list=cuFetch_('GET','/list/'+CU_LIST_ID);
@@ -351,40 +360,43 @@ function readCemNames_(){
   return result;
 }
 
+// Reporting month = previous calendar month (today − 1 month), in the project timezone.
+//   short    → matches the Complete CHI Data column header, e.g. 'MAY 26'
+//   friendly → written into the ClickUp Month field, e.g. 'May 2026'
+function reportingMonth_() {
+  var ABBR = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  var FULL = ['January','February','March','April','May','June','July','August',
+              'September','October','November','December'];
+  var now = new Date();
+  var d = new Date(now.getFullYear(), now.getMonth() - 1, 1); // first day of previous month
+  return {
+    short:    (ABBR[d.getMonth()] + ' ' + (d.getFullYear() % 100)).toUpperCase(),
+    friendly: FULL[d.getMonth()] + ' ' + d.getFullYear()
+  };
+}
+
+// Reads the hidden 'Complete CHI Data' sheet for the PREVIOUS calendar month only.
+// monthLabel is always returned (even if the column is empty/absent) so the ClickUp
+// Month field reflects the reporting month; sites with no data return an empty {} so
+// their fields get blanked downstream.
 function readCompleteChiData_() {
-  var MIN_COVERAGE = 0.5;
+  var rm = reportingMonth_();
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var sh = ss.getSheetByName('Complete CHI Data');
-  if (!sh) { Logger.log('Complete CHI Data sheet not found — run Build All Trends first.'); return {data:{}, monthLabel:''}; }
+  if (!sh) { Logger.log('Complete CHI Data sheet not found — run Build All Trends first.'); return {data:{}, monthLabel: rm.friendly}; }
   var data = sh.getDataRange().getValues();
-  if (data.length < 3) return {data:{}, monthLabel:''};
+  if (data.length < 3) return {data:{}, monthLabel: rm.friendly};
   var header = data[1];
 
-  var chiRows = [];
-  for (var r = 2; r < data.length; r++) {
-    if (String(data[r][1]).trim() === 'CHI Score') chiRows.push(r);
+  var targetCol = -1;
+  for (var c = 2; c < header.length; c++) {
+    if (String(header[c]).trim().toUpperCase() === rm.short) { targetCol = c; break; }
   }
-  var bestCol = -1, bestLabel = '';
-  for (var c = header.length - 1; c >= 2; c--) {
-    var good = 0;
-    for (var ri = 0; ri < chiRows.length; ri++) {
-      var v = parseFloat(data[chiRows[ri]][c]);
-      if (!isNaN(v) && v >= 1) good++;
-    }
-    if (chiRows.length > 0 && good / chiRows.length >= MIN_COVERAGE) {
-      bestCol = c; bestLabel = String(header[c]); break;
-    }
+  if (targetCol < 0) {
+    Logger.log('Complete CHI Data: reporting-month column "' + rm.short + '" not found — board will show blank for ' + rm.friendly + '.');
+    return {data:{}, monthLabel: rm.friendly};
   }
-  if (bestCol < 0) {
-    for (var c = header.length - 1; c >= 2; c--) {
-      if (chiRows.length > 0) {
-        var v = parseFloat(data[chiRows[0]][c]);
-        if (!isNaN(v) && v > 0) { bestCol = c; bestLabel = String(header[c]); break; }
-      }
-    }
-  }
-  if (bestCol < 0) return {data:{}, monthLabel:''};
-  Logger.log('Complete CHI Data → column ' + bestCol + ' (' + bestLabel + ')');
+  Logger.log('Complete CHI Data → reporting month ' + rm.friendly + ' (column ' + targetCol + ')');
 
   var result = {}, currentSite = null;
   for (var r = 2; r < data.length; r++) {
@@ -392,11 +404,11 @@ function readCompleteChiData_() {
     var label    = String(data[r][1]).trim();
     if (siteName) currentSite = siteName.toLowerCase();
     if (!currentSite || !label) continue;
-    if (!result[currentSite]) result[currentSite] = {};
-    var numVal = parseFloat(data[r][bestCol]);
+    if (!result[currentSite]) result[currentSite] = {};   // ensure every site has an entry (so blanks get cleared)
+    var numVal = parseFloat(data[r][targetCol]);
     if (!isNaN(numVal) && numVal > 0) result[currentSite][label] = numVal;
   }
-  return {data: result, monthLabel: bestLabel};
+  return {data: result, monthLabel: rm.friendly};
 }
 
 // ════════════════════════════════════════════════════════
@@ -413,6 +425,26 @@ var FIELD_NAMES = [
   'Throughput Blueprint',
   'Outcome Metric',
   'Move the Needle'
+];
+
+// [ ClickUp field name (key in CU_FIELD_IDS) , source label in 'Complete CHI Data' ]
+// Note the label differences handled here: sheet 'Frown vs Smile' → field 'Frowns vs
+// Smiles'; 'Thruput Blueprint' → 'Throughput Blueprint'; 'Outcome Metrics' → 'Outcome
+// Metric'. Rag Status is derived from CHI Score separately.
+var METRIC_MAP = [
+  ['CHI Score',            'CHI Score'],
+  ['Performance Value',    'Performance Value'],
+  ['Solution KPIs',        'Solution KPIs'],
+  ['Uptime',               'Uptime'],
+  ['MTBF / MTTR',          'MTBF / MTTR'],
+  ['Experience Value',     'Experience Value'],
+  ['Frowns vs Smiles',     'Frown vs Smile'],
+  ['Sentiment',            'Sentiment'],
+  ['Trust',                'Trust'],
+  ['Business Value',       'Business Value'],
+  ['Throughput Blueprint', 'Thruput Blueprint'],
+  ['Outcome Metric',       'Outcome Metrics'],
+  ['Move the Needle',      'Move the Needle']
 ];
 
 function loadFieldIds_(){
@@ -453,8 +485,19 @@ function matchSite_(taskName,dataKeys){
 function ragKey_(chiScore){return chiScore>=7?'Green':chiScore>=5?'Amber':'Red';}
 function setField_(taskId,fieldId,value){
   if(!fieldId||value===null||value===undefined||value==='')return;
-  try{Utilities.sleep(180);cuFetch_('POST','/task/'+taskId+'/field/'+fieldId,{value:value});}
+  try{Utilities.sleep(150);cuFetch_('POST','/task/'+taskId+'/field/'+fieldId,{value:value});}
   catch(e){Logger.log('setField failed task='+taskId+' field='+fieldId+': '+e.message);}
+}
+function clearField_(taskId,fieldId){
+  if(!fieldId)return;
+  try{Utilities.sleep(150);cuFetch_('DELETE','/task/'+taskId+'/field/'+fieldId);}
+  catch(e){Logger.log('clearField failed task='+taskId+' field='+fieldId+': '+e.message);}
+}
+// Set a value when present; otherwise blank the field — but only issue a DELETE
+// if the field currently holds a value (curHas), to avoid needless API calls.
+function applyField_(taskId,fieldId,value,curHas){
+  if(value===null||value===undefined||value===''){if(curHas)clearField_(taskId,fieldId);}
+  else setField_(taskId,fieldId,value);
 }
 
 function clickupSetupFields(){
@@ -557,7 +600,9 @@ function clickupUpdateScorecard(){
 
   ss.toast('Fetching tasks...','⏳');
   var list=findTestingList_(),tasks=getAllTasks_(list.id);
-  Logger.log('Tasks: '+tasks.length+'  Month: '+chiData.monthLabel);
+  var monthFieldId=resolveFieldIdByName_(list.id,'Month');
+  if(!monthFieldId)Logger.log('WARN: "Month" field not found on list — month label will not be written.');
+  Logger.log('Tasks: '+tasks.length+'  Reporting month: '+chiData.monthLabel);
 
   ss.toast('Updating '+tasks.length+' tasks...','⏳');
   var updated=0,skipped=0;
@@ -565,28 +610,32 @@ function clickupUpdateScorecard(){
     var task=tasks[t],matchKey=matchSite_(task.name,allKeys);
     if(!matchKey){Logger.log('No match: "'+task.name+'"');skipped++;continue;}
     var d=chiData.data[matchKey]||{};
-    var chi=d['CHI Score']||null;
-    Logger.log('→ '+task.name+' CHI='+chi);
+    var chi=d['CHI Score'];if(chi===undefined||chi==='')chi=null;
 
-    setField_(task.id,FIELD_IDS['CHI Score'],            d['CHI Score']||null);
-    setField_(task.id,FIELD_IDS['Performance Value'],    d['Performance Value']||null);
-    setField_(task.id,FIELD_IDS['Solution KPIs'],        d['Solution KPIs']||null);
-    setField_(task.id,FIELD_IDS['Uptime'],               d['Uptime']||null);
-    setField_(task.id,FIELD_IDS['MTBF / MTTR'],          d['MTBF / MTTR']||null);
-    setField_(task.id,FIELD_IDS['Experience Value'],     d['Experience Value']||null);
-    setField_(task.id,FIELD_IDS['Frowns vs Smiles'],     d['Frown vs Smile']||null);
-    setField_(task.id,FIELD_IDS['Sentiment'],            d['Sentiment']||null);
-    setField_(task.id,FIELD_IDS['Trust'],                d['Trust']||null);
-    setField_(task.id,FIELD_IDS['Business Value'],        d['Business Value']||null);
-    setField_(task.id,FIELD_IDS['Throughput Blueprint'], d['Thruput Blueprint']||null);
-    setField_(task.id,FIELD_IDS['Outcome Metric'],       d['Outcome Metrics']||null);
-    setField_(task.id,FIELD_IDS['Move the Needle'],      d['Move the Needle']||null);
+    // Snapshot which fields currently hold a value, so we only clear what needs clearing.
+    var cur={},cfs=task.custom_fields||[];
+    for(var cf=0;cf<cfs.length;cf++){var fv=cfs[cf];
+      cur[fv.id]=(fv.value!==undefined&&fv.value!==null&&fv.value!=='');}
 
+    // Stamp the reporting month on every task.
+    applyField_(task.id,monthFieldId,chiData.monthLabel,cur[monthFieldId]);
+
+    // Metric fields — set when present, blank when missing.
+    for(var mi=0;mi<METRIC_MAP.length;mi++){
+      var fid=FIELD_IDS[METRIC_MAP[mi][0]];if(!fid)continue;
+      var val=d[METRIC_MAP[mi][1]];if(val===undefined)val=null;
+      applyField_(task.id,fid,val,cur[fid]);}
+
+    // RAG status derived from CHI; blank it when there's no CHI for this month.
+    var ragId=FIELD_IDS['Rag Status'];
     if(chi!==null){
       var optId=RAG_OPTS[ragKey_(chi)];
-      if(optId)setField_(task.id,FIELD_IDS['Rag Status'],optId);
-      else Logger.log('  RAG option not found for: '+ragKey_(chi));}
-    updated++;Utilities.sleep(300);}
+      if(optId)setField_(task.id,ragId,optId);
+      else Logger.log('  RAG option not found for: '+ragKey_(chi));
+    }else if(cur[ragId])clearField_(task.id,ragId);
+
+    Logger.log('→ '+task.name+'  CHI='+chi+'  ('+chiData.monthLabel+')');
+    updated++;}
   ss.toast('✅ '+updated+' updated, '+skipped+' skipped.\nMonth: '+chiData.monthLabel,'✅ Done');
   Logger.log('=== DONE: '+updated+' updated, '+skipped+' skipped ===');
 }
