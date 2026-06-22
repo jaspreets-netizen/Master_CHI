@@ -568,12 +568,16 @@ function clickupUpdateScorecard(){
     var chi=d['CHI Score']||null;
     Logger.log('→ '+task.name+' CHI='+chi);
 
+    setField_(task.id,FIELD_IDS['CHI Score'],            d['CHI Score']||null);
     setField_(task.id,FIELD_IDS['Performance Value'],    d['Performance Value']||null);
     setField_(task.id,FIELD_IDS['Solution KPIs'],        d['Solution KPIs']||null);
+    setField_(task.id,FIELD_IDS['Uptime'],               d['Uptime']||null);
     setField_(task.id,FIELD_IDS['MTBF / MTTR'],          d['MTBF / MTTR']||null);
+    setField_(task.id,FIELD_IDS['Experience Value'],     d['Experience Value']||null);
     setField_(task.id,FIELD_IDS['Frowns vs Smiles'],     d['Frown vs Smile']||null);
     setField_(task.id,FIELD_IDS['Sentiment'],            d['Sentiment']||null);
     setField_(task.id,FIELD_IDS['Trust'],                d['Trust']||null);
+    setField_(task.id,FIELD_IDS['Business Value'],        d['Business Value']||null);
     setField_(task.id,FIELD_IDS['Throughput Blueprint'], d['Thruput Blueprint']||null);
     setField_(task.id,FIELD_IDS['Outcome Metric'],       d['Outcome Metrics']||null);
     setField_(task.id,FIELD_IDS['Move the Needle'],      d['Move the Needle']||null);
