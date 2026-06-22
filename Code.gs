@@ -4,14 +4,17 @@
  * API token stored in Apps Script → User Properties (per-user, not shared)
  * Property name: CU_TOKEN  (set via clickupSaveToken)
  *
- * RUN ORDER (first time):
+ * RUN ORDER:
  *   1. Build all trend sheets  (⚙ Master CHI → 📊 Build all trend sheets)
- *   2. Add missing tasks       (function dropdown → clickupAddMissingTasks)
- *   3. Sync data               (function dropdown → clickupUpdateScorecard)
- *   4. Enable auto-sync        (function dropdown → clickupSetupDailySync)
+ *   2. Sync to ClickUp         (⚙ Master CHI → 🔄 Sync to ClickUp now, or run
+ *                               clickupSyncNow). One call mirrors the sheet to
+ *                               BOTH lists: adds new site tasks, pushes scorecard
+ *                               + history, and deletes tasks for removed sites.
+ *   3. Enable auto-sync        (function dropdown → clickupSetupDailySync; runs
+ *                               clickupSyncNow daily at 3 AM New York)
  *
- * TEST list: Rough CHI Scorecard (numeric ID hardcoded below)
- * PRODUCTION list: CHI Scorecard — NEVER TOUCH
+ * TEST lists:       Rough CHI Scorecard / Rough CHI History (ids hardcoded below)
+ * PRODUCTION lists: CHI Scorecard / CHI History — hard-blocked via CU_PROD_LIST_IDS
  */
 
 // ═══ CONFIG ═══
@@ -317,29 +320,6 @@ function fetchListGuarded_(listId){
 }
 function findTestingList_(){return fetchListGuarded_(CU_LIST_ID);}
 function findHistoryList_(){return fetchListGuarded_(CU_HISTORY_LIST_ID);}
-function clickupShowStructure(){
-  var ss=SpreadsheetApp.getActiveSpreadsheet();
-  if(!CU_TOKEN){ss.toast('API token not set. Run clickupSaveToken first.','❌');return;}
-  var spaces=cuFetch_('GET','/team/'+CU_TEAM_ID+'/space?archived=false').spaces;
-  Logger.log('=== CLICKUP WORKSPACE STRUCTURE ===');
-  for(var i=0;i<spaces.length;i++){
-    var sp=spaces[i];
-    Logger.log('SPACE: "'+sp.name+'"  id='+sp.id);
-    var folders=cuFetch_('GET','/space/'+sp.id+'/folder?archived=false').folders;
-    for(var j=0;j<folders.length;j++){
-      var fo=folders[j];
-      Logger.log('  FOLDER: "'+fo.name+'"  id='+fo.id);
-      var lists=cuFetch_('GET','/folder/'+fo.id+'/list').lists;
-      for(var k=0;k<lists.length;k++)
-        Logger.log('    LIST: "'+lists[k].name+'"  id='+lists[k].id);
-    }
-    var spaceLists=cuFetch_('GET','/space/'+sp.id+'/list?archived=false').lists||[];
-    for(var j=0;j<spaceLists.length;j++)
-      Logger.log('  LIST (no folder): "'+spaceLists[j].name+'"  id='+spaceLists[j].id);
-  }
-  Logger.log('=== END ===');
-  ss.toast('Done — open Apps Script → View → Logs','✅');
-}
 
 function getAllTasks_(listId){
   var tasks=[],page=0;
@@ -353,44 +333,6 @@ function getAllTasks_(listId){
 // ════════════════════════════════════════════════════════
 // DATA READER — reads trend sheets, finds last complete month
 // ════════════════════════════════════════════════════════
-function readTrendSheetComplete_(sheetName){
-  var MIN_COVERAGE=0.5;
-  var ss=SpreadsheetApp.getActiveSpreadsheet(),sh=ss.getSheetByName(sheetName);
-  if(!sh){Logger.log('Sheet not found: '+sheetName);return{map:{},monthLabel:''};}
-  var data=sh.getDataRange().getValues();
-  if(data.length<3)return{map:{},monthLabel:''};
-  var siteCount=0;
-  for(var r=2;r<data.length;r++){if(String(data[r][0]).trim())siteCount++;}
-  if(siteCount===0)return{map:{},monthLabel:''};
-  var bestCol=-1,bestLabel='';
-  for(var c=data[1].length-1;c>=2;c--){
-    var goodCount=0;
-    for(var r=2;r<data.length;r++){
-      if(!String(data[r][0]).trim())continue;
-      var v=parseFloat(data[r][c]);if(!isNaN(v)&&v>=1)goodCount++;}
-    if(goodCount/siteCount>=MIN_COVERAGE){bestCol=c;bestLabel=String(data[1][c]);break;}}
-  if(bestCol<0){
-    Logger.log(sheetName+': no complete month found, using latest with any data');
-    for(var c=data[1].length-1;c>=2;c--){
-      for(var r=2;r<data.length;r++){var v=parseFloat(data[r][c]);if(!isNaN(v)&&v>0){bestCol=c;bestLabel=String(data[1][c]);break;}}
-      if(bestCol>=0)break;}}
-  Logger.log(sheetName+' → using column '+bestCol+' ('+bestLabel+')');
-  var result={};
-  for(var r=2;r<data.length;r++){
-    var name=String(data[r][0]).trim();if(!name)continue;
-    var v=parseFloat(data[r][bestCol]);if(!isNaN(v)&&v>0)result[name.toLowerCase()]=v;}
-  return{map:result,monthLabel:bestLabel};
-}
-function readCemNames_(){
-  var sh=SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Activation');
-  if(!sh)return{};
-  var data=sh.getRange(3,1,100,3).getValues(),result={};
-  for(var i=0;i<data.length;i++){
-    var name=String(data[i][1]).trim(),cem=String(data[i][2]).trim();
-    if(name)result[name.toLowerCase()]=cem;}
-  return result;
-}
-
 // Reporting month = previous calendar month (today − 1 month), in the project timezone.
 //   short    → matches the Complete CHI Data column header, e.g. 'MAY 26'
 //   friendly → written into the ClickUp Month field, e.g. 'May 2026'
@@ -494,19 +436,6 @@ function readChiHistory_(){
 // ════════════════════════════════════════════════════════
 // CLICKUP SYNC v3
 // ════════════════════════════════════════════════════════
-var FIELD_NAMES = [
-  'Rag Status',
-  'Performance Value',
-  'Solution KPIs',
-  'MTBF / MTTR',
-  'Frowns vs Smiles',
-  'Sentiment',
-  'Trust',
-  'Throughput Blueprint',
-  'Outcome Metric',
-  'Move the Needle'
-];
-
 // [ ClickUp field name (key in CU_FIELD_IDS) , source label in 'Complete CHI Data' ]
 // Note the label differences handled here: sheet 'Frown vs Smile' → field 'Frowns vs
 // Smiles'; 'Thruput Blueprint' → 'Throughput Blueprint'; 'Outcome Metrics' → 'Outcome
@@ -527,24 +456,6 @@ var METRIC_MAP = [
   ['Move the Needle',      'Move the Needle']
 ];
 
-function loadFieldIds_(){
-  var stored=PropertiesService.getScriptProperties().getProperty('testing_field_ids');
-  return stored?JSON.parse(stored):null;
-}
-function saveFieldIds_(fieldIds,ragOptions){
-  var props=PropertiesService.getScriptProperties();
-  props.setProperty('testing_field_ids',JSON.stringify(fieldIds));
-  props.setProperty('testing_rag_options',JSON.stringify(ragOptions));
-}
-function loadRagOptions_(){
-  var stored=PropertiesService.getScriptProperties().getProperty('testing_rag_options');
-  return stored?JSON.parse(stored):{};
-}
-function clearStoredIds_(){
-  var props=PropertiesService.getScriptProperties();
-  props.deleteProperty('testing_list_id');props.deleteProperty('testing_field_ids');props.deleteProperty('testing_rag_options');
-  Logger.log('Cleared stored IDs.');
-}
 function normHard_(s){return String(s).toLowerCase().replace(/[^a-z0-9]/g,'');}
 function normLight_(s){return String(s).toLowerCase().replace(/['\-\.]/g,'').replace(/\s+/g,' ').trim();}
 function matchSite_(taskName,dataKeys){
@@ -573,95 +484,24 @@ function clearField_(taskId,fieldId){
   try{Utilities.sleep(150);cuFetch_('DELETE','/task/'+taskId+'/field/'+fieldId);}
   catch(e){Logger.log('clearField failed task='+taskId+' field='+fieldId+': '+e.message);}
 }
-// Set a value when present; otherwise blank the field — but only issue a DELETE
-// if the field currently holds a value (curHas), to avoid needless API calls.
-function applyField_(taskId,fieldId,value,curHas){
-  if(value===null||value===undefined||value===''){if(curHas)clearField_(taskId,fieldId);}
-  else setField_(taskId,fieldId,value);
+// Loose equality so we can skip rewriting unchanged values (ClickUp returns numbers
+// as strings, etc.). Returns true when a and b represent the same value.
+function valuesEqual_(a,b){
+  if(a===b)return true;
+  if(String(a)===String(b))return true;
+  var na=parseFloat(a),nb=parseFloat(b);
+  return (!isNaN(na)&&!isNaN(nb)&&na===nb);
 }
-
-function clickupSetupFields(){
-  var ss=SpreadsheetApp.getActiveSpreadsheet();
-  if(!CU_TOKEN){ss.toast('API token not set. Run clickupSaveToken first.','❌');return;}
-  ss.toast('Finding '+CU_LIST_NAME+' list...','⏳');
-  var list;try{list=findTestingList_();}catch(e){ss.toast(e.message,'❌');return;}
-  var listId=list.id;
-  Logger.log('Setting up fields on list: '+listId);
-  ss.toast('Checking existing fields...','⏳');
-  var existingFieldIds={},existingRagOptions={};
-  try{
-    var rawFields=(cuFetch_('GET','/list/'+listId+'/field').fields)||[];
-    for(var i=0;i<rawFields.length;i++){
-      var f=rawFields[i];if(f.name)existingFieldIds[f.name]=f.id;
-      if(f.name==='Rag Status'&&f.type_config&&f.type_config.options){
-        for(var j=0;j<f.type_config.options.length;j++)
-          existingRagOptions[f.type_config.options[j].name]=f.type_config.options[j].id;}}
-    Logger.log('Existing fields: '+JSON.stringify(Object.keys(existingFieldIds)));
-  }catch(e){Logger.log('Could not read existing fields: '+e.message);}
-  var fieldDefs=[
-    {name:'CEM Name',type:'text'},{name:'CHI Score',type:'number'},
-    {name:'Performance Value',type:'number'},{name:'Experience Value',type:'number'},
-    {name:'Business Value',type:'number'},{name:'Solution KPIs',type:'number'},
-    {name:'Uptime',type:'number'},{name:'MTBF / MTTR',type:'number'},
-    {name:'Frowns vs Smiles',type:'number'},{name:'Sentiment',type:'number'},
-    {name:'Trust',type:'number'},{name:'Throughput Blueprint',type:'number'},
-    {name:'Outcome Metric',type:'number'},{name:'Move the Needle',type:'number'},
-    {name:'Rag Status',type:'drop_down',type_config:{options:[
-      {name:'Green',color:'#548235'},{name:'Amber',color:'#BF8F00'},{name:'Red',color:'#FF0000'}]}}
-  ];
-  var fieldIds={},ragOptions=existingRagOptions;
-  for(var key in existingFieldIds)fieldIds[key]=existingFieldIds[key];
-  var created=0,skipped=0,failed=0;
-  ss.toast('Creating missing custom fields...','⏳');
-  for(var i=0;i<fieldDefs.length;i++){
-    var def=fieldDefs[i];
-    if(existingFieldIds[def.name]){Logger.log('Already exists: '+def.name);skipped++;continue;}
-    Utilities.sleep(400);
-    var payload={name:def.name,type:def.type};if(def.type_config)payload.type_config=def.type_config;
-    try{
-      var f=cuFetch_('POST','/list/'+listId+'/field',payload);
-      if(f&&f.id){
-        fieldIds[def.name]=f.id;
-        if(def.name==='Rag Status'&&f.type_config&&f.type_config.options)
-          for(var j=0;j<f.type_config.options.length;j++)
-            ragOptions[f.type_config.options[j].name]=f.type_config.options[j].id;
-        Logger.log('Created: '+def.name+' → '+f.id);created++;
-      }else{Logger.log('No ID returned for: '+def.name);failed++;}
-    }catch(e){Logger.log('Failed: '+def.name+' → '+e.message);failed++;}}
-  saveFieldIds_(fieldIds,ragOptions);
-  ss.toast('✅ Field setup complete\nCreated: '+created+'\nAlready existed: '+skipped+'\nFailed: '+failed,'✅');
-  Logger.log('Field IDs: '+JSON.stringify(fieldIds));
-}
-
-function clickupReadFieldIds(){
-  var ss=SpreadsheetApp.getActiveSpreadsheet();
-  if(!CU_TOKEN){ss.toast('API token not set. Run clickupSaveToken first.','❌');return;}
-  ss.toast('Reading field IDs from ClickUp...','⏳');
-  var list;try{list=findTestingList_();}catch(e){ss.toast(e.message,'❌');return;}
-  var rawFields;
-  try{rawFields=(cuFetch_('GET','/list/'+list.id+'/field').fields)||[];}
-  catch(e){ss.toast('Could not read fields: '+e.message,'❌');return;}
-  var fieldIds={},ragOptions={},found=[],missing=[];
-  for(var i=0;i<rawFields.length;i++){
-    var f=rawFields[i];
-    if(!f.name)continue;
-    fieldIds[f.name]=f.id;
-    if(f.name==='Rag Status'&&f.type_config&&f.type_config.options){
-      for(var j=0;j<f.type_config.options.length;j++)
-        ragOptions[f.type_config.options[j].name]=f.type_config.options[j].id;}
-  }
-  for(var k=0;k<FIELD_NAMES.length;k++){
-    if(fieldIds[FIELD_NAMES[k]])found.push(FIELD_NAMES[k]);
-    else missing.push(FIELD_NAMES[k]);}
-  saveFieldIds_(fieldIds,ragOptions);
-  Logger.log('Found: '+JSON.stringify(found));
-  Logger.log('Missing: '+JSON.stringify(missing));
-  Logger.log('RAG options: '+JSON.stringify(ragOptions));
-  if(missing.length===0){
-    ss.toast('✅ All '+FIELD_NAMES.length+' field IDs stored.','✅');
-  } else {
-    ss.toast('⚠ Still missing: '+missing.join(', '),'⚠');
-  }
+// Mirror one field to a target value, using the task's CURRENT raw value (curRaw) to
+// avoid needless API calls: write only when changed, DELETE only when clearing a value
+// that exists. This is what keeps routine syncs fast.
+function applyField_(taskId,fieldId,value,curRaw){
+  if(!fieldId)return;
+  var newEmpty=(value===null||value===undefined||value==='');
+  var curEmpty=(curRaw===undefined||curRaw===null||curRaw==='');
+  if(newEmpty){if(!curEmpty)clearField_(taskId,fieldId);return;}
+  if(!curEmpty&&valuesEqual_(curRaw,value))return;   // unchanged → skip
+  setField_(taskId,fieldId,value);
 }
 
 function clickupUpdateScorecard(){
@@ -692,10 +532,9 @@ function clickupUpdateScorecard(){
     var d=chiData.data[matchKey]||{};
     var chi=d['CHI Score'];if(chi===undefined||chi==='')chi=null;
 
-    // Snapshot which fields currently hold a value, so we only clear what needs clearing.
+    // Snapshot each field's CURRENT raw value, so we only write what actually changed.
     var cur={},cfs=task.custom_fields||[];
-    for(var cf=0;cf<cfs.length;cf++){var fv=cfs[cf];
-      cur[fv.id]=(fv.value!==undefined&&fv.value!==null&&fv.value!=='');}
+    for(var cf=0;cf<cfs.length;cf++){var fv=cfs[cf];cur[fv.id]=fv.value;}
 
     // Stamp the reporting month on every task.
     applyField_(task.id,monthFieldId,chiData.monthLabel,cur[monthFieldId]);
@@ -710,9 +549,9 @@ function clickupUpdateScorecard(){
     var ragId=FIELD_IDS['Rag Status'];
     if(chi!==null){
       var optId=RAG_OPTS[ragKey_(chi)];
-      if(optId)setField_(task.id,ragId,optId);
+      if(optId)applyField_(task.id,ragId,optId,cur[ragId]);
       else Logger.log('  RAG option not found for: '+ragKey_(chi));
-    }else if(cur[ragId])clearField_(task.id,ragId);
+    }else applyField_(task.id,ragId,null,cur[ragId]);
 
     Logger.log('→ '+task.name+'  CHI='+chi+'  ('+chiData.monthLabel+')');
     updated++;}
@@ -791,8 +630,7 @@ function clickupUpdateHistory(){
     if(!matchKey){Logger.log('No match: "'+task.name+'"');skipped++;continue;}
     var d=hist.data[matchKey]||{};
     var cur={},cfs=task.custom_fields||[];
-    for(var cf=0;cf<cfs.length;cf++){var fv=cfs[cf];
-      cur[fv.id]=(fv.value!==undefined&&fv.value!==null&&fv.value!=='');}
+    for(var cf=0;cf<cfs.length;cf++){var fv=cfs[cf];cur[fv.id]=fv.value;}
     for(var mm=0;mm<hist.months.length;mm++){
       var fname=hist.months[mm],fid=fieldMap[fname];
       if(!fid)continue;
@@ -817,22 +655,6 @@ function clickupDiagnose(){
   var tasks=getAllTasks_(list.id);
   for(var i=0;i<Math.min(10,tasks.length);i++)Logger.log(tasks[i].name+'  id='+tasks[i].id);
   ss.toast('Diagnostics complete — open View → Logs.','✅');
-}
-
-function clickupCreateList(){
-  var ss=SpreadsheetApp.getActiveSpreadsheet();
-  if(!CU_TOKEN){ss.toast('API token not set. Run clickupSaveToken first.','❌');return;}
-  ss.toast('Creating '+CU_LIST_NAME+' list...','⏳');
-  var list=cuFetch_('POST','/folder/'+CU_FOLDER_ID+'/list',{name:CU_LIST_NAME});
-  if(!list||!list.id){ss.toast('List creation failed.','❌');return;}
-  Logger.log('Created list: '+list.id);
-  ss.toast('Creating tasks...','⏳');
-  var sites=getActiveSites_(),created=0;
-  for(var i=0;i<sites.length;i++){
-    Utilities.sleep(350);
-    try{cuFetch_('POST','/list/'+list.id+'/task',{name:sites[i].name});created++;}
-    catch(e){Logger.log('Task failed: '+sites[i].name);}}
-  ss.toast('✅ List created with '+created+' tasks.','✅');
 }
 
 // ════════════════════════════════════════════════════════
