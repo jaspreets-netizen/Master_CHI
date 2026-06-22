@@ -1,8 +1,8 @@
 /**
  * Master CHI Scorecard v2.3 + ClickUp Sync v3
  *
- * API token stored in Apps Script → Project Settings → Script Properties
- * Property name: CU_TOKEN
+ * API token stored in Apps Script → User Properties (per-user, not shared)
+ * Property name: CU_TOKEN  (set via clickupSaveToken)
  *
  * RUN ORDER (first time):
  *   1. Build all trend sheets  (⚙ Master CHI → 📊 Build all trend sheets)
@@ -10,7 +10,7 @@
  *   3. Sync data               (function dropdown → clickupUpdateScorecard)
  *   4. Enable auto-sync        (function dropdown → clickupSetupDailySync)
  *
- * TEST list: Rough-CHI-scorecard (ID hardcoded below)
+ * TEST list: Rough CHI Scorecard (numeric ID hardcoded below)
  * PRODUCTION list: CHI Scorecard — NEVER TOUCH
  */
 
@@ -18,8 +18,9 @@
 var CU_TOKEN     = PropertiesService.getUserProperties().getProperty('CU_TOKEN');
 var CU_TEAM_ID   = '90161459573';
 var CU_FOLDER_ID = '90169480684';  // Customer Success → Health & Growth
-var CU_LIST_NAME = 'Rough-CHI-scorecard';   // TEST list — NEVER touch 'CHI Scorecard' (production)
-var CU_LIST_ID   = '2kz0ncbn-46736';   // Rough-CHI-scorecard (hardcoded — no name search)
+var CU_LIST_NAME = 'Rough CHI Scorecard';   // TEST list — NEVER touch 'CHI Scorecard' (production)
+var CU_LIST_ID   = '901615509118';   // Rough CHI Scorecard — NUMERIC list id (from URL /v/l/li/901615509118)
+var CU_PROD_LIST_NAME = 'CHI Scorecard';   // PRODUCTION — findTestingList_ HARD-REFUSES to operate on this
 
 // Field UUIDs for Rough-CHI-scorecard (confirmed from ClickUp AI, 2026-06-20)
 var CU_FIELD_IDS = {
@@ -263,6 +264,11 @@ function cuFetch_(method,endpoint,payload){
 function findTestingList_(){
   var list=cuFetch_('GET','/list/'+CU_LIST_ID);
   if(!list||!list.id)throw new Error('List '+CU_LIST_ID+' ('+CU_LIST_NAME+') not found via API.');
+  // HARD GUARD: never operate on the production list, no matter what id is configured.
+  var resolvedName=String(list.name||'').trim().toLowerCase();
+  if(resolvedName===CU_PROD_LIST_NAME.toLowerCase())
+    throw new Error('REFUSING: list '+list.id+' is the PRODUCTION list "'+list.name+'". '+
+      'Point CU_LIST_ID at the test list "'+CU_LIST_NAME+'" before running.');
   return list;
 }
 function clickupShowStructure(){
@@ -540,6 +546,11 @@ function clickupUpdateScorecard(){
 
   var allKeys=Object.keys(chiData.data);
 
+  // Prefer field ids resolved from the live list (clickupSetupFields/clickupReadFieldIds);
+  // fall back to the hardcoded constants only if nothing has been stored yet.
+  var FIELD_IDS=loadFieldIds_()||CU_FIELD_IDS;
+  var RAG_OPTS=loadRagOptions_();if(!RAG_OPTS||!Object.keys(RAG_OPTS).length)RAG_OPTS=CU_RAG_OPTIONS;
+
   ss.toast('Fetching tasks...','⏳');
   var list=findTestingList_(),tasks=getAllTasks_(list.id);
   Logger.log('Tasks: '+tasks.length+'  Month: '+chiData.monthLabel);
@@ -553,19 +564,19 @@ function clickupUpdateScorecard(){
     var chi=d['CHI Score']||null;
     Logger.log('→ '+task.name+' CHI='+chi);
 
-    setField_(task.id,CU_FIELD_IDS['Performance Value'],    d['Performance Value']||null);
-    setField_(task.id,CU_FIELD_IDS['Solution KPIs'],        d['Solution KPIs']||null);
-    setField_(task.id,CU_FIELD_IDS['MTBF / MTTR'],          d['MTBF / MTTR']||null);
-    setField_(task.id,CU_FIELD_IDS['Frowns vs Smiles'],     d['Frown vs Smile']||null);
-    setField_(task.id,CU_FIELD_IDS['Sentiment'],            d['Sentiment']||null);
-    setField_(task.id,CU_FIELD_IDS['Trust'],                d['Trust']||null);
-    setField_(task.id,CU_FIELD_IDS['Throughput Blueprint'], d['Thruput Blueprint']||null);
-    setField_(task.id,CU_FIELD_IDS['Outcome Metric'],       d['Outcome Metrics']||null);
-    setField_(task.id,CU_FIELD_IDS['Move the Needle'],      d['Move the Needle']||null);
+    setField_(task.id,FIELD_IDS['Performance Value'],    d['Performance Value']||null);
+    setField_(task.id,FIELD_IDS['Solution KPIs'],        d['Solution KPIs']||null);
+    setField_(task.id,FIELD_IDS['MTBF / MTTR'],          d['MTBF / MTTR']||null);
+    setField_(task.id,FIELD_IDS['Frowns vs Smiles'],     d['Frown vs Smile']||null);
+    setField_(task.id,FIELD_IDS['Sentiment'],            d['Sentiment']||null);
+    setField_(task.id,FIELD_IDS['Trust'],                d['Trust']||null);
+    setField_(task.id,FIELD_IDS['Throughput Blueprint'], d['Thruput Blueprint']||null);
+    setField_(task.id,FIELD_IDS['Outcome Metric'],       d['Outcome Metrics']||null);
+    setField_(task.id,FIELD_IDS['Move the Needle'],      d['Move the Needle']||null);
 
     if(chi!==null){
-      var optId=CU_RAG_OPTIONS[ragKey_(chi)];
-      if(optId)setField_(task.id,CU_FIELD_IDS['Rag Status'],optId);
+      var optId=RAG_OPTS[ragKey_(chi)];
+      if(optId)setField_(task.id,FIELD_IDS['Rag Status'],optId);
       else Logger.log('  RAG option not found for: '+ragKey_(chi));}
     updated++;Utilities.sleep(300);}
   ss.toast('✅ '+updated+' updated, '+skipped+' skipped.\nMonth: '+chiData.monthLabel,'✅ Done');
