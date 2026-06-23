@@ -103,24 +103,41 @@ function clickupSyncNow(){
   var siteKeys=sites.map(function(s){return s.name.toLowerCase();});
   var rm=reportingMonth_();
   ss.toast('Syncing to ClickUp (scorecard + history)...','⏳');
-  var report=[];
-  // 1) ensure tasks exist for every active site
-  try{addMissingTasksToList_(findTestingList_()).added.forEach(function(n){report.push('+ Added to Scorecard: '+n);});}catch(e){Logger.log('add scorecard tasks: '+e.message);}
-  try{addMissingTasksToList_(findHistoryList_()).added.forEach(function(n){report.push('+ Added to History: '+n);});}catch(e){Logger.log('add history tasks: '+e.message);}
-  // 2) push data (each appends its per-site change lines to report)
-  clickupUpdateScorecard(report);
-  clickupUpdateHistory(report);
+  var addedSet={},removedSet={},scChanges=[],histChanges=[];
+  // 1) ensure tasks exist for every active site (a site lands on BOTH lists → count once)
+  try{addMissingTasksToList_(findTestingList_()).added.forEach(function(n){addedSet[n]=true;});}catch(e){Logger.log('add scorecard tasks: '+e.message);}
+  try{addMissingTasksToList_(findHistoryList_()).added.forEach(function(n){addedSet[n]=true;});}catch(e){Logger.log('add history tasks: '+e.message);}
+  // 2) push data (each appends its per-site change lines)
+  clickupUpdateScorecard(scChanges);
+  clickupUpdateHistory(histChanges);
   // 3) prune orphan tasks (sites removed from the sheet) — true mirror
-  try{pruneListToActiveSites_(findTestingList_(),siteKeys).forEach(function(n){report.push('− Removed from Scorecard: '+n);});}catch(e){Logger.log('prune scorecard: '+e.message);}
-  try{pruneListToActiveSites_(findHistoryList_(),siteKeys).forEach(function(n){report.push('− Removed from History: '+n);});}catch(e){Logger.log('prune history: '+e.message);}
-  ss.toast('✅ Sync complete — '+report.length+' change(s).','✅');
-  showSyncReport_('ClickUp Sync — '+rm.friendly,report);
+  try{pruneListToActiveSites_(findTestingList_(),siteKeys).forEach(function(n){removedSet[n]=true;});}catch(e){Logger.log('prune scorecard: '+e.message);}
+  try{pruneListToActiveSites_(findHistoryList_(),siteKeys).forEach(function(n){removedSet[n]=true;});}catch(e){Logger.log('prune history: '+e.message);}
+
+  var sections=[
+    {header:'SITES ADDED',                         lines:Object.keys(addedSet)},
+    {header:'SITES REMOVED',                       lines:Object.keys(removedSet)},
+    {header:'CHI SCORECARD — values changed',      lines:scChanges},
+    {header:'CHI SCORECARD HISTORY — values changed',lines:histChanges}
+  ];
+  var total=sections.reduce(function(s,sec){return s+sec.lines.length;},0);
+  ss.toast('✅ Sync complete — '+total+' change(s).','✅');
+  showSyncReport_('ClickUp Sync — '+rm.friendly,sections);
 }
-// Show a copyable summary of everything that changed this sync. Uses a modal dialog
+// Show a copyable summary grouped into clear categories. Uses a modal dialog
 // (selectable/copyable); on the background trigger there's no UI, so it just logs.
-function showSyncReport_(title,lines){
-  var body=lines.length?lines.join('\n'):'No changes — both lists were already up to date.';
-  var text=title+'\n\n'+body+'\n\n'+lines.length+' change(s).';
+function showSyncReport_(title,sections){
+  var out=[title,''],total=0;
+  for(var i=0;i<sections.length;i++){
+    var sec=sections[i];
+    if(!sec.lines||!sec.lines.length)continue;
+    total+=sec.lines.length;
+    out.push('▌ '+sec.header+' ('+sec.lines.length+')');
+    for(var j=0;j<sec.lines.length;j++)out.push('   • '+sec.lines[j]);
+    out.push('');
+  }
+  out.push(total===0?'No changes — both lists were already up to date.':'Total: '+total+' change(s).');
+  var text=out.join('\n');
   Logger.log(text);
   try{
     var safe=text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
@@ -128,7 +145,7 @@ function showSyncReport_(title,lines){
       '<div style="font-family:Arial,sans-serif;margin:4px">'+
       '<textarea readonly onclick="this.select()" style="width:100%;height:340px;font-family:monospace;font-size:12px;white-space:pre;box-sizing:border-box">'+safe+'</textarea>'+
       '<p style="font-size:11px;color:#666;margin:6px 2px 0">Click in the box, then Ctrl/Cmd-A to select all and Ctrl/Cmd-C to copy.</p>'+
-      '</div>').setWidth(560).setHeight(420);
+      '</div>').setWidth(560).setHeight(440);
     SpreadsheetApp.getUi().showModalDialog(html,title);
   }catch(e){/* no UI context (background trigger) — already logged above */}
 }
@@ -291,7 +308,6 @@ function buildCompleteCHIData_(){
       SpreadsheetApp.newConditionalFormatRule().whenNumberBetween(5,6.99).setBackground('#FFF2CC').setRanges([dataRange]).build(),
       SpreadsheetApp.newConditionalFormatRule().whenNumberGreaterThanOrEqualTo(7).setBackground('#D9EAD3').setRanges([dataRange]).build()]);}
   sh.setFrozenRows(2);sh.setFrozenColumns(2);
-  sh.hideSheet();
   return ns+' sites × '+nc+' months';
 }
 function buildAllTrends(){
@@ -522,6 +538,35 @@ function applyField_(taskId,fieldId,value,curRaw){
   setField_(taskId,fieldId,value);
   return curEmpty?'set':'update';
 }
+// Build a map { optionId → orderindex } for a drop_down field, so we can tell whether
+// a task's dropdown already shows the right option (ClickUp stores the value as the
+// option's orderindex, not its id).
+function dropdownIndexById_(listId,fieldId){
+  var map={};
+  try{
+    var fields=(cuFetch_('GET','/list/'+listId+'/field').fields)||[];
+    for(var i=0;i<fields.length;i++){
+      var f=fields[i];
+      if(f.id===fieldId&&f.type_config&&f.type_config.options){
+        var opts=f.type_config.options;
+        for(var j=0;j<opts.length;j++)
+          map[opts[j].id]=(opts[j].orderindex!==undefined&&opts[j].orderindex!==null)?opts[j].orderindex:j;
+      }
+    }
+  }catch(e){Logger.log('dropdownIndexById_ failed: '+e.message);}
+  return map;
+}
+// Mirror a drop_down field with change-detection. curRaw is the task's current value
+// (an orderindex, or sometimes the option id); targetIdx is the orderindex of optionId.
+function applyDropdown_(taskId,fieldId,optionId,targetIdx,curRaw){
+  if(!fieldId)return null;
+  var curEmpty=(curRaw===undefined||curRaw===null||curRaw==='');
+  if(optionId===null||optionId===undefined){if(!curEmpty){clearField_(taskId,fieldId);return 'clear';}return null;}
+  // Already correct? Match either the option id or its orderindex.
+  if(!curEmpty&&(String(curRaw)===String(optionId)||(targetIdx!==undefined&&targetIdx!==null&&Number(curRaw)===Number(targetIdx))))return null;
+  setField_(taskId,fieldId,optionId);
+  return curEmpty?'set':'update';
+}
 
 function clickupUpdateScorecard(report){
   var ss=SpreadsheetApp.getActiveSpreadsheet();
@@ -541,6 +586,8 @@ function clickupUpdateScorecard(report){
   var list=findTestingList_(),tasks=getAllTasks_(list.id);
   var monthFieldId=resolveFieldIdByName_(list.id,'Month');
   if(!monthFieldId)Logger.log('WARN: "Month" field not found on list — month label will not be written.');
+  var ragId=FIELD_IDS['Rag Status'];
+  var ragIdxById=dropdownIndexById_(list.id,ragId);   // optionId → orderindex, for change-detection
   Logger.log('Tasks: '+tasks.length+'  Reporting month: '+chiData.monthLabel);
 
   ss.toast('Updating '+tasks.length+' tasks...','⏳');
@@ -565,15 +612,14 @@ function clickupUpdateScorecard(report){
       var val=d[METRIC_MAP[mi][1]];if(val===undefined)val=null;
       if(applyField_(task.id,fid,val,cur[fid]))changed.push(METRIC_MAP[mi][0]);}
 
-    // RAG status derived from CHI; blank it when there's no CHI for this month.
-    var ragId=FIELD_IDS['Rag Status'];
+    // RAG status derived from CHI (dropdown — compared by option index); blank when no CHI.
     if(chi!==null){
       var optId=RAG_OPTS[ragKey_(chi)];
-      if(optId){if(applyField_(task.id,ragId,optId,cur[ragId]))changed.push('Rag Status');}
+      if(optId){if(applyDropdown_(task.id,ragId,optId,ragIdxById[optId],cur[ragId]))changed.push('Rag Status');}
       else Logger.log('  RAG option not found for: '+ragKey_(chi));
-    }else if(applyField_(task.id,ragId,null,cur[ragId]))changed.push('Rag Status');
+    }else if(applyDropdown_(task.id,ragId,null,null,cur[ragId]))changed.push('Rag Status');
 
-    if(changed.length){if(report)report.push('Scorecard · '+task.name+': '+changed.join(', '));updated++;}
+    if(changed.length){if(report)report.push(task.name+': '+changed.join(', '));updated++;}
     Logger.log('→ '+task.name+'  CHI='+chi+(changed.length?'  changed: '+changed.join(','):'  (no change)'));
   }
   ss.toast('✅ Scorecard: '+updated+' task(s) changed, '+skipped+' unmatched.\nMonth: '+chiData.monthLabel,'✅ Done');
@@ -659,7 +705,7 @@ function clickupUpdateHistory(report){
       var val=d[fname];if(val===undefined)val=null;
       if(applyField_(task.id,fid,val,cur[fid]))changedM.push(fname);
     }
-    if(changedM.length){if(report)report.push('History · '+task.name+': '+changedM.join(', '));updated++;}
+    if(changedM.length){if(report)report.push(task.name+': '+changedM.join(', '));updated++;}
     Logger.log('→ '+task.name+(changedM.length?' history changed: '+changedM.join(','):' history (no change)'));
   }
   ss.toast('✅ History: '+updated+' task(s) changed, '+skipped+' unmatched.','✅ Done');
