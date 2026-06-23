@@ -612,12 +612,13 @@ function clickupUpdateScorecard(report){
       var val=d[METRIC_MAP[mi][1]];if(val===undefined)val=null;
       if(applyField_(task.id,fid,val,cur[fid]))changed.push(METRIC_MAP[mi][0]);}
 
-    // RAG status derived from CHI (dropdown — compared by option index); blank when no CHI.
+    // RAG status derived from CHI (still written to ClickUp via change-detection, but
+    // intentionally NOT listed in the change report).
     if(chi!==null){
       var optId=RAG_OPTS[ragKey_(chi)];
-      if(optId){if(applyDropdown_(task.id,ragId,optId,ragIdxById[optId],cur[ragId]))changed.push('Rag Status');}
+      if(optId)applyDropdown_(task.id,ragId,optId,ragIdxById[optId],cur[ragId]);
       else Logger.log('  RAG option not found for: '+ragKey_(chi));
-    }else if(applyDropdown_(task.id,ragId,null,null,cur[ragId]))changed.push('Rag Status');
+    }else applyDropdown_(task.id,ragId,null,null,cur[ragId]);
 
     if(changed.length){if(report)report.push(task.name+': '+changed.join(', '));updated++;}
     Logger.log('→ '+task.name+'  CHI='+chi+(changed.length?'  changed: '+changed.join(','):'  (no change)'));
