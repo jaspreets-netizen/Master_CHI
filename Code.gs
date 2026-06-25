@@ -264,7 +264,7 @@ function completeBlockDef_(){
     {label:'Trust',             kind:'child', color:CLR.E},
     {label:'',                  kind:'blank'},
     {label:'Business Value',    kind:'parent',color:CLR.B},
-    {label:'Thruput Blueprint', kind:'child', color:CLR.B},
+    {label:'Throughput Blueprint', kind:'child', color:CLR.B, alts:['Thruput Blueprint']},
     {label:'Outcome Metrics',   kind:'child', color:CLR.B},
     {label:'Move the Needle',   kind:'child', color:CLR.B}
   ];
@@ -294,7 +294,7 @@ function buildCompleteCHIData_(){
       labelsCol.push([block[j].label]);
       var row=[];
       if(block[j].kind==='blank'){for(var i=0;i<nc;i++)row.push('');}
-      else{for(var i=0;i<nc;i++)row.push(impFormula_(site.sid,mCols[i].dashCol,[block[j].label]));}
+      else{for(var i=0;i<nc;i++)row.push(impFormula_(site.sid,mCols[i].dashCol,[block[j].label].concat(block[j].alts||[])));}
       valGrid.push(row);}
     sh.getRange(top,2,bl,1).setValues(labelsCol);
     if(nc>0){sh.getRange(top,3,bl,nc).setFormulas(valGrid).setNumberFormat('0.0').setHorizontalAlignment('center');}
@@ -472,8 +472,9 @@ function readChiHistory_(){
 // ════════════════════════════════════════════════════════
 // [ ClickUp field name (key in CU_FIELD_IDS) , source label in 'Complete CHI Data' ]
 // Note the label differences handled here: sheet 'Frown vs Smile' → field 'Frowns vs
-// Smiles'; 'Thruput Blueprint' → 'Throughput Blueprint'; 'Outcome Metrics' → 'Outcome
-// Metric'. Rag Status is derived from CHI Score separately.
+// Smiles'; 'Outcome Metrics' → 'Outcome Metric'. Rag Status is derived from CHI Score
+// separately. ('Throughput Blueprint' now matches on both sides after the rename; the
+// sheet still tolerates the old 'Thruput Blueprint' spelling via completeBlockDef_ alts.)
 var METRIC_MAP = [
   ['CHI Score',            'CHI Score'],
   ['Performance Value',    'Performance Value'],
@@ -485,7 +486,7 @@ var METRIC_MAP = [
   ['Sentiment',            'Sentiment'],
   ['Trust',                'Trust'],
   ['Business Value',       'Business Value'],
-  ['Throughput Blueprint', 'Thruput Blueprint'],
+  ['Throughput Blueprint', 'Throughput Blueprint'],
   ['Outcome Metric',       'Outcome Metrics'],
   ['Move the Needle',      'Move the Needle']
 ];
