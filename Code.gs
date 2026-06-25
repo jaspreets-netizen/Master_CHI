@@ -168,9 +168,13 @@ function colLetter_(n){var s='';while(n>0){n--;s=String.fromCharCode(65+(n%26))+
 // row = the metric's fixed Dashboard row — instead of label-matching column A. This makes
 // the Master immune to label renames/typos on the site side. A blank cell reads blank
 // (= "that month isn't published yet"); only a real access failure shows the ⚠ message.
+// IFNA absorbs IMPORTRANGE's transient "Loading…" (#N/A) state shown right after a rebuild,
+// so the ⚠ doesn't flicker on already-connected sites; a genuine access failure is #REF!
+// (not #N/A) and still falls through to the ⚠ message.
 function impFormula_(sid,dashCol,row){
   var cell='Dashboard!'+colLetter_(dashCol)+row;
-  return '=IFERROR(IMPORTRANGE("https://docs.google.com/spreadsheets/d/'+sid+'","'+cell+'"),"⚠ no access — grant access in column E")';
+  var imp='IMPORTRANGE("https://docs.google.com/spreadsheets/d/'+sid+'","'+cell+'")';
+  return '=IFERROR(IFNA('+imp+',""),"⚠ no access — grant access in column E")';
 }
 function buildMasterActivation(){
   var ss=SpreadsheetApp.getActiveSpreadsheet(),sh=ss.getSheetByName('Activation');if(sh)ss.deleteSheet(sh);
