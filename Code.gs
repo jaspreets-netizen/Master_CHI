@@ -92,31 +92,32 @@ function onOpen() {
     .addToUi();
 }
 
-// One-click full MIRROR sync of the Google Sheet to both ClickUp lists. Each site is
-// bound to its task by a stable id stored in the registry, so renames are mirrored in
-// place (no duplicates / lost history): 1) link every active site to its task (stored id,
-// else backfill by name, else create), 2) rename + push scorecard + history data,
-// 3) delete orphan tasks whose id no site claims. Also runs every 24h.
+// One-click full MIRROR sync of the Google Sheet to both ClickUp lists. Each site is bound
+// to its task by a stable id stored in the hidden CU_LINK_SHEET tab (keyed by sheet id, not
+// in the registry), so renames are mirrored in place (no duplicates / lost history):
+// 1) link every active site to its task (stored id, else backfill by name, else create),
+// 2) rename + push scorecard + history data, 3) delete orphan tasks whose id no site claims.
+// The human registry is never written to. Also runs every 24h.
 function clickupSyncNow(){
   var ss=SpreadsheetApp.getActiveSpreadsheet();
   if(!CU_TOKEN){ss.toast('API token not set. Run clickupSaveToken first.','❌');return;}
   var sites;try{sites=getActiveSites_();}catch(e){ss.toast(e.message,'❌');return;}
-  ensureRegistryHeaders_();
   var rm=reportingMonth_();
   ss.toast('Syncing to ClickUp (scorecard + history)...','⏳');
   var addedSet={},removedSet={},scChanges=[],histChanges=[];
-  // Each list is a true one-way MIRROR keyed by a stable task id stored in the registry:
+  // Each list is a true one-way MIRROR keyed by a stable task id stored in the hidden
+  // CU_LINK_SHEET tab (keyed by each site's sheet id):
   //   link (use stored id / backfill by name / create) → rename + update fields → prune by id.
   try{
     var scList=findTestingList_();
-    var scLink=ensureTaskLinks_(scList,SCORECARD_TASK_ID_COL,'scTaskId',sites);
+    var scLink=ensureTaskLinks_(scList,'scorecard',sites);
     scLink.added.forEach(function(n){addedSet[n]=true;});
     clickupUpdateScorecard(scChanges,scList,scLink);
     pruneListById_(scList,scLink.idToSite,scLink.tasks).forEach(function(n){removedSet[n]=true;});
   }catch(e){Logger.log('scorecard sync: '+e.message);}
   try{
     var hList=findHistoryList_();
-    var hLink=ensureTaskLinks_(hList,HISTORY_TASK_ID_COL,'histTaskId',sites);
+    var hLink=ensureTaskLinks_(hList,'history',sites);
     hLink.added.forEach(function(n){addedSet[n]=true;});
     clickupUpdateHistory(histChanges,hList,hLink);
     pruneListById_(hList,hLink.idToSite,hLink.tasks).forEach(function(n){removedSet[n]=true;});
@@ -176,72 +177,22 @@ function impFormula_(sid,dashCol,row){
   var imp='IMPORTRANGE("https://docs.google.com/spreadsheets/d/'+sid+'","'+cell+'")';
   return '=IFERROR(IFNA('+imp+',""),"⚠ no access — grant access in column E")';
 }
-function buildMasterActivation(){
-  var ss=SpreadsheetApp.getActiveSpreadsheet(),sh=ss.getSheetByName('Activation');if(sh)ss.deleteSheet(sh);
-  sh=ss.insertSheet('Activation',0);
-  if(sh.getMaxColumns()<8)sh.insertColumnsAfter(sh.getMaxColumns(),8-sh.getMaxColumns());
-  if(sh.getMaxRows()<110)sh.insertRowsAfter(sh.getMaxRows(),110-sh.getMaxRows());
-  sh.setColumnWidth(1,30);sh.setColumnWidth(2,180);sh.setColumnWidth(3,160);sh.setColumnWidth(4,500);sh.setColumnWidth(5,200);sh.setColumnWidth(6,200);sh.setColumnWidth(7,150);sh.setColumnWidth(8,150);
-  sh.getRange(1,1,sh.getMaxRows(),8).setFontFamily('Arial').setFontSize(11);
-  sh.getRange(1,1).setValue('Master CHI Scorecard — Site Registry').setFontWeight('bold').setFontSize(14).setFontColor(CLR.DB);
-  // Columns G/H (task ids) are auto-managed by the ClickUp sync — leave them blank here.
-  sh.getRange(2,1,1,8).setValues([['#','Site Name','CEM Name','CHI Sheet URL','Allow Access','Connection Status','Scorecard Task ID','History Task ID']]).setBackground(CLR.DB).setFontColor(CLR.W).setFontWeight('bold');
-  sh.getRange(3,1).setValue(1).setHorizontalAlignment('center');
-  sh.getRange(3,2).setValue("Dillard's").setBackground(CLR.ME);
-  sh.getRange(3,3).setValue('Jaspreet').setBackground(CLR.ME);
-  sh.getRange(3,4).setValue('https://docs.google.com/spreadsheets/d/1FtBti0RsDJwuig1z71kdQL6rq6fKRFXUBHD4SF6d_RE/edit').setBackground(CLR.ME).setFontSize(9).setWrap(true);
-  sh.getRange(3,5).setFormula('=IMPORTRANGE("https://docs.google.com/spreadsheets/d/1FtBti0RsDJwuig1z71kdQL6rq6fKRFXUBHD4SF6d_RE","Dashboard!A3")');
-  sh.getRange(3,6).setFormula('=IF(D3="","",IF(ISTEXT(E3),"✅ Connected","⚠ Click E3 → Allow Access"))');
-  sh.setRowHeight(3,30);
-  for(var i=1;i<100;i++){var r=3+i;
-    sh.getRange(r,1).setValue(i+1).setHorizontalAlignment('center').setFontColor('#ccc');
-    sh.getRange(r,2).setBackground(CLR.ME);sh.getRange(r,3).setBackground(CLR.ME);sh.getRange(r,4).setBackground(CLR.ME);
-    sh.getRange(r,5).setFormula('=IF(D'+r+'="","",IMPORTRANGE(D'+r+',"Dashboard!A3"))');
-    sh.getRange(r,6).setFormula('=IF(D'+r+'="","",IF(ISTEXT(E'+r+'),"✅ Connected","⚠ Click E'+r+' → Allow Access"))');
-  }
-  sh.getRange(104,1).setValue('Instructions').setFontWeight('bold').setFontColor(CLR.DB);
-  sh.getRange(105,1).setValue('1. Enter site name in column B, CEM name in column C, and paste the full Google Sheet URL in column D').setFontSize(10).setFontColor('#666');
-  sh.getRange(106,1).setValue('2. Column E will show an IMPORTRANGE formula — click it and grant access when prompted').setFontSize(10).setFontColor('#666');
-  sh.getRange(107,1).setValue('3. Column F shows ✅ Connected once access is granted').setFontSize(10).setFontColor('#666');
-  sh.getRange(108,1).setValue('4. Run ⚙ Master CHI → Build all trend sheets to generate trend tabs').setFontSize(10).setFontColor('#666');
-  sh.getRange(109,1).setValue('5. Values update automatically as site sheets are populated — no refresh needed').setFontSize(10).setFontColor('#666');
-  sh.setFrozenRows(2);
-  ss.toast('Activation built with 100 site slots + CEM Name column.','Done');
-}
-// Registry columns that hold the auto-managed ClickUp task ids (one per list).
-var SCORECARD_TASK_ID_COL = 7;   // column G
-var HISTORY_TASK_ID_COL   = 8;   // column H
+// The Activation sheet is a hand-maintained registry (# | Site | CEM | URL | Allow | Status,
+// plus any manual columns). There is intentionally no code that builds or rebuilds it — that
+// would risk wiping live site data — so it is created and edited by hand.
 function getActiveSites_(){
   var sh=SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Activation');
-  if(!sh)throw new Error('Run Build Activation first.');
-  // Columns 1-8: # | Site | CEM | URL | Allow | Status | Scorecard Task ID | History Task ID.
-  // Read defensively in case a narrow sheet predates the two task-id columns (they get
-  // added by ensureRegistryHeaders_); missing cells default to '' rather than 'undefined'.
-  var nCols=Math.min(8,sh.getMaxColumns()),sites=[],vals=sh.getRange(3,1,100,nCols).getValues();
-  function cell_(rowArr,idx){return idx<rowArr.length&&rowArr[idx]!=null?String(rowArr[idx]).trim():'';}
+  if(!sh)throw new Error('Activation sheet not found — it is maintained manually.');
+  // The Activation sheet is human-maintained (# | Site | CEM | URL | Allow | Status, plus any
+  // manual columns such as a Salesforce System ID). The Master only needs the site name, CEM
+  // and the sheet id parsed from the URL — it does NOT read, write, or depend on the
+  // Salesforce column. ClickUp task ids live in the hidden CU_LINK_SHEET tab (never in this
+  // sheet), so manual columns here are never touched by the sync.
+  var sites=[],vals=sh.getRange(3,1,100,4).getValues();
   for(var i=0;i<vals.length;i++){
-    var name=cell_(vals[i],1),cem=cell_(vals[i],2),url=cell_(vals[i],3);
-    if(name&&url){var sid=extractSheetId_(url);if(sid)sites.push({
-      name:name,cem:cem,sid:sid,
-      row:3+i,                                              // registry row, for id write-back
-      scTaskId:cell_(vals[i],6),                            // stored Scorecard task id (may be '')
-      histTaskId:cell_(vals[i],7)                           // stored History task id (may be '')
-    });}}
+    var name=String(vals[i][1]).trim(),cem=String(vals[i][2]).trim(),url=String(vals[i][3]).trim();
+    if(name&&url){var sid=extractSheetId_(url);if(sid)sites.push({name:name,cem:cem,sid:sid});}}
   return sites;
-}
-// Ensure the two auto-managed task-id columns have headers (self-healing for registries
-// built before these columns existed). Only writes when both header cells are blank, so
-// it never clobbers a hand-edited header. Existing site data is untouched.
-function ensureRegistryHeaders_(){
-  var sh=SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Activation');
-  if(!sh)return;
-  if(sh.getMaxColumns()<HISTORY_TASK_ID_COL)sh.insertColumnsAfter(sh.getMaxColumns(),HISTORY_TASK_ID_COL-sh.getMaxColumns());
-  var hdr=sh.getRange(2,SCORECARD_TASK_ID_COL,1,2).getValues()[0];
-  if(!String(hdr[0]).trim()&&!String(hdr[1]).trim()){
-    sh.getRange(2,SCORECARD_TASK_ID_COL,1,2).setValues([['Scorecard Task ID','History Task ID']])
-      .setBackground(CLR.DB).setFontColor(CLR.W).setFontWeight('bold');
-    sh.setColumnWidth(SCORECARD_TASK_ID_COL,150);sh.setColumnWidth(HISTORY_TASK_ID_COL,150);
-  }
 }
 function getMonthColumns_(){
   var today=new Date(),curYr=today.getFullYear(),curMn=today.getMonth()+1;
@@ -612,36 +563,73 @@ function applyDropdown_(taskId,fieldId,optionId,targetIdx,curRaw){
   return curEmpty?'set':'update';
 }
 
-// Link every active site to a stable ClickUp task on `list`, keyed by the id stored in
-// registry column `idCol` (mirrored on the site object as `idProp`). Resolution per site:
+// Hidden tab that stores the ClickUp task links (one row per site, keyed by sheet id). It is
+// the ONLY place task ids are persisted — the human Activation registry is never written to.
+var CU_LINK_SHEET = '_ClickUp Sync';   // hidden; "do not edit" bookkeeping for the sync
+var CU_LINK_COL = {scorecard:3, history:4};   // role → column in CU_LINK_SHEET (C / D)
+// Fetch (creating + hiding if needed) the hidden link tab. Columns:
+//   A Site Sheet ID (key) | B Site Name | C Scorecard Task ID | D History Task ID
+function getLinkSheet_(){
+  var ss=SpreadsheetApp.getActiveSpreadsheet(),sh=ss.getSheetByName(CU_LINK_SHEET);
+  if(!sh){
+    sh=ss.insertSheet(CU_LINK_SHEET);
+    sh.getRange(1,1,1,4).setValues([['Site Sheet ID','Site Name','Scorecard Task ID','History Task ID']])
+      .setFontWeight('bold').setBackground(CLR.DB).setFontColor(CLR.W);
+    sh.getRange(1,1).setNote('Auto-managed by the ClickUp sync — do not edit or delete.');
+    sh.setFrozenRows(1);
+  }
+  try{sh.hideSheet();}catch(e){}
+  return sh;
+}
+// Read the link tab into { sid: {row, name, scorecard, history} }.
+function readLinkRows_(sh){
+  var map={},last=sh.getLastRow();
+  if(last<2)return map;
+  var vals=sh.getRange(2,1,last-1,4).getValues();
+  for(var i=0;i<vals.length;i++){
+    var sid=String(vals[i][0]).trim();if(!sid)continue;
+    map[sid]={row:2+i,name:String(vals[i][1]).trim(),scorecard:String(vals[i][2]).trim(),history:String(vals[i][3]).trim()};
+  }
+  return map;
+}
+// Link every active site to a stable ClickUp task on `list` for `role` ('scorecard'|'history'),
+// keyed by the task id stored in the hidden CU_LINK_SHEET (by the site's sheet id). Per site:
 //   1) stored id that still exists  → use it directly
 //   2) else backfill once by fuzzy NAME-matching an existing (unclaimed) task → store its id
 //   3) else create a new task                                                → store its id
-// The id is written back to the registry so a later site rename never orphans the task.
-// Returns { idToSite:{taskId→site}, added:[names], tasks:[all task objects incl. created] }.
-function ensureTaskLinks_(list,idCol,idProp,sites){
-  var sh=SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Activation');
+// The id is written to the hidden tab (never the registry) so a later site rename never
+// orphans the task. Returns { idToSite:{taskId→site}, added:[names], tasks:[all task objs] }.
+function ensureTaskLinks_(list,role,sites){
+  var sh=getLinkSheet_(),linkMap=readLinkRows_(sh),col=CU_LINK_COL[role];
+  var appendAt=sh.getLastRow()+1;
   var tasks=getAllTasks_(list.id),byId={};
   for(var i=0;i<tasks.length;i++)byId[tasks[i].id]=tasks[i];
   var added=[],idToSite={},claimed={};
-  function claim(site,taskId){site[idProp]=taskId;if(sh)sh.getRange(site.row,idCol).setValue(taskId);idToSite[taskId]=site;claimed[taskId]=true;}
+  // Ensure a row exists for this site's sheet id (append if new), keep its name current.
+  function rowFor(site){
+    var e=linkMap[site.sid];
+    if(!e){sh.getRange(appendAt,1,1,2).setValues([[site.sid,site.name]]);e={row:appendAt,name:site.name,scorecard:'',history:''};linkMap[site.sid]=e;appendAt++;}
+    else if(e.name!==site.name){sh.getRange(e.row,2).setValue(site.name);e.name=site.name;}
+    return e;
+  }
+  function store(site,taskId){var e=rowFor(site);sh.getRange(e.row,col).setValue(taskId);e[role]=taskId;idToSite[taskId]=site;claimed[taskId]=true;}
   for(var s=0;s<sites.length;s++){
-    var site=sites[s],storedId=site[idProp];
+    var site=sites[s],e=linkMap[site.sid],storedId=e?e[role]:'';
     // 1) stored id still valid → use directly
-    if(storedId&&byId[storedId]&&!claimed[storedId]){idToSite[storedId]=site;claimed[storedId]=true;continue;}
+    if(storedId&&byId[storedId]&&!claimed[storedId]){idToSite[storedId]=site;claimed[storedId]=true;rowFor(site);continue;}
     // 2) backfill: first unclaimed existing task whose name matches this site
     var matched=null;
     for(var ti=0;ti<tasks.length;ti++){
       if(claimed[tasks[ti].id])continue;
       if(matchSite_(tasks[ti].name,[site.name])){matched=tasks[ti];break;}}
-    if(matched){claim(site,matched.id);continue;}
+    if(matched){store(site,matched.id);continue;}
     // 3) create a new task and store the returned id
     Utilities.sleep(350);
     try{
       var created=cuFetch_('POST','/list/'+list.id+'/task',{name:site.name});
       byId[created.id]=created;tasks.push(created);
-      claim(site,created.id);added.push(site.name);
-    }catch(e){Logger.log('Failed to create task for "'+site.name+'" on list '+list.id+' — '+e.message);}
+      store(site,created.id);added.push(site.name);
+    }catch(e2){Logger.log('Failed to create task for "'+site.name+'" on list '+list.id+' — '+e2.message);}
   }
   return {idToSite:idToSite,added:added,tasks:tasks};
 }
@@ -675,7 +663,7 @@ function clickupUpdateScorecard(report,list,link){
   if(!list||!link){
     var sites0;try{sites0=getActiveSites_();}catch(e){ss.toast(e.message,'❌');return;}
     try{list=findTestingList_();}catch(e){ss.toast(e.message,'❌');return;}
-    link=ensureTaskLinks_(list,SCORECARD_TASK_ID_COL,'scTaskId',sites0);
+    link=ensureTaskLinks_(list,'scorecard',sites0);
   }
 
   ss.toast('Reading Complete CHI Data...','⏳');
@@ -735,8 +723,7 @@ function clickupAddMissingTasks(){
   if(!CU_TOKEN){ss.toast('API token not set. Run clickupSaveToken first.','❌');return;}
   ss.toast('Linking sites to '+CU_LIST_NAME+'...','⏳');
   var list,sites;try{list=findTestingList_();sites=getActiveSites_();}catch(e){ss.toast(e.message,'❌');return;}
-  ensureRegistryHeaders_();
-  var r=ensureTaskLinks_(list,SCORECARD_TASK_ID_COL,'scTaskId',sites);
+  var r=ensureTaskLinks_(list,'scorecard',sites);
   ss.toast('✅ Added: '+r.added.length+' new tasks\nLinked total: '+Object.keys(r.idToSite).length,'✅');
   Logger.log('Scorecard tasks — added: '+r.added.length+', linked: '+Object.keys(r.idToSite).length);
 }
@@ -745,8 +732,7 @@ function clickupAddMissingHistoryTasks(){
   if(!CU_TOKEN){ss.toast('API token not set. Run clickupSaveToken first.','❌');return;}
   ss.toast('Linking sites to '+CU_HISTORY_LIST_NAME+'...','⏳');
   var list,sites;try{list=findHistoryList_();sites=getActiveSites_();}catch(e){ss.toast(e.message,'❌');return;}
-  ensureRegistryHeaders_();
-  var r=ensureTaskLinks_(list,HISTORY_TASK_ID_COL,'histTaskId',sites);
+  var r=ensureTaskLinks_(list,'history',sites);
   ss.toast('✅ Added: '+r.added.length+' new tasks\nLinked total: '+Object.keys(r.idToSite).length,'✅');
   Logger.log('History tasks — added: '+r.added.length+', linked: '+Object.keys(r.idToSite).length);
 }
@@ -758,7 +744,7 @@ function clickupUpdateHistory(report,list,link){
   if(!list||!link){
     var sites0;try{sites0=getActiveSites_();}catch(e){ss.toast(e.message,'❌');return;}
     try{list=findHistoryList_();}catch(e){ss.toast(e.message,'❌');return;}
-    link=ensureTaskLinks_(list,HISTORY_TASK_ID_COL,'histTaskId',sites0);
+    link=ensureTaskLinks_(list,'history',sites0);
   }
   ss.toast('Reading CHI history...','⏳');
   var hist=readChiHistory_();
