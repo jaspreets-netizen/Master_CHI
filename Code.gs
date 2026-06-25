@@ -60,7 +60,6 @@ var CU_RAG_OPTIONS = {
 var CLR = {DB:'#1F4E79',W:'#FFFFFF',P:'#2E75B6',E:'#548235',B:'#BF8F00',
   GY:'#EFEFEF',ME:'#DCEEFB',LBL:'#D9D9D9',SHE:'#B6D7A8',EXG:'#E2EFDA',BZG:'#FFF2CC'};
 var MN_AB = {2:'Feb',3:'Mar',4:'Apr',5:'May',6:'Jun',7:'Jul',8:'Aug',9:'Sep',10:'Oct',11:'Nov',12:'Dec'};
-var DASH_RANGE = '"Dashboard!A1:AZ80"';
 
 // ════════════════════════════════════════════════════════
 // API TOKEN SETUP (run once — only you can see User Properties)
@@ -93,26 +92,35 @@ function onOpen() {
     .addToUi();
 }
 
-// One-click full MIRROR sync of the Google Sheet to both ClickUp lists:
-//   1) add a task for every active site, 2) push scorecard + history data,
-//   3) delete orphan tasks for sites removed from the sheet. Also runs every 24h.
+// One-click full MIRROR sync of the Google Sheet to both ClickUp lists. Each site is
+// bound to its task by a stable id stored in the registry, so renames are mirrored in
+// place (no duplicates / lost history): 1) link every active site to its task (stored id,
+// else backfill by name, else create), 2) rename + push scorecard + history data,
+// 3) delete orphan tasks whose id no site claims. Also runs every 24h.
 function clickupSyncNow(){
   var ss=SpreadsheetApp.getActiveSpreadsheet();
   if(!CU_TOKEN){ss.toast('API token not set. Run clickupSaveToken first.','❌');return;}
   var sites;try{sites=getActiveSites_();}catch(e){ss.toast(e.message,'❌');return;}
-  var siteKeys=sites.map(function(s){return s.name.toLowerCase();});
+  ensureRegistryHeaders_();
   var rm=reportingMonth_();
   ss.toast('Syncing to ClickUp (scorecard + history)...','⏳');
   var addedSet={},removedSet={},scChanges=[],histChanges=[];
-  // 1) ensure tasks exist for every active site (a site lands on BOTH lists → count once)
-  try{addMissingTasksToList_(findTestingList_()).added.forEach(function(n){addedSet[n]=true;});}catch(e){Logger.log('add scorecard tasks: '+e.message);}
-  try{addMissingTasksToList_(findHistoryList_()).added.forEach(function(n){addedSet[n]=true;});}catch(e){Logger.log('add history tasks: '+e.message);}
-  // 2) push data (each appends its per-site change lines)
-  clickupUpdateScorecard(scChanges);
-  clickupUpdateHistory(histChanges);
-  // 3) prune orphan tasks (sites removed from the sheet) — true mirror
-  try{pruneListToActiveSites_(findTestingList_(),siteKeys).forEach(function(n){removedSet[n]=true;});}catch(e){Logger.log('prune scorecard: '+e.message);}
-  try{pruneListToActiveSites_(findHistoryList_(),siteKeys).forEach(function(n){removedSet[n]=true;});}catch(e){Logger.log('prune history: '+e.message);}
+  // Each list is a true one-way MIRROR keyed by a stable task id stored in the registry:
+  //   link (use stored id / backfill by name / create) → rename + update fields → prune by id.
+  try{
+    var scList=findTestingList_();
+    var scLink=ensureTaskLinks_(scList,SCORECARD_TASK_ID_COL,'scTaskId',sites);
+    scLink.added.forEach(function(n){addedSet[n]=true;});
+    clickupUpdateScorecard(scChanges,scList,scLink);
+    pruneListById_(scList,scLink.idToSite,scLink.tasks).forEach(function(n){removedSet[n]=true;});
+  }catch(e){Logger.log('scorecard sync: '+e.message);}
+  try{
+    var hList=findHistoryList_();
+    var hLink=ensureTaskLinks_(hList,HISTORY_TASK_ID_COL,'histTaskId',sites);
+    hLink.added.forEach(function(n){addedSet[n]=true;});
+    clickupUpdateHistory(histChanges,hList,hLink);
+    pruneListById_(hList,hLink.idToSite,hLink.tasks).forEach(function(n){removedSet[n]=true;});
+  }catch(e){Logger.log('history sync: '+e.message);}
 
   var sections=[
     {header:'SITES ADDED',                         lines:Object.keys(addedSet)},
@@ -155,23 +163,25 @@ function showSyncReport_(title,sections){
 // ════════════════════════════════════════════════════════
 function extractSheetId_(url){var m=String(url).match(/\/d\/([a-zA-Z0-9_-]+)/);return m?m[1]:'';}
 function colLetter_(n){var s='';while(n>0){n--;s=String.fromCharCode(65+(n%26))+s;n=Math.floor(n/26);}return s;}
-function impFormula_(sid,dashCol,labels){
-  var imp='IMPORTRANGE("https://docs.google.com/spreadsheets/d/'+sid+'",'+DASH_RANGE+')';
-  var lookup='ARRAYFORMULA(TRIM(SUBSTITUTE(INDEX('+imp+',0,1),CHAR(160)," ")))';
-  var expr='""';
-  for(var i=labels.length-1;i>=0;i--){
-    expr='IFERROR(INDEX('+imp+',MATCH("'+labels[i]+'",'+lookup+',0),'+dashCol+'),'+expr+')';}
-  return '='+expr;
+// Read one fixed Dashboard cell from a site. The Dashboard layout is code-defined, so we
+// address the exact cell — column = the month/biweek dashCol (both start Feb 2026 at B),
+// row = the metric's fixed Dashboard row — instead of label-matching column A. This makes
+// the Master immune to label renames/typos on the site side. A blank cell reads blank
+// (= "that month isn't published yet"); only a real access failure shows the ⚠ message.
+function impFormula_(sid,dashCol,row){
+  var cell='Dashboard!'+colLetter_(dashCol)+row;
+  return '=IFERROR(IMPORTRANGE("https://docs.google.com/spreadsheets/d/'+sid+'","'+cell+'"),"⚠ no access — grant access in column E")';
 }
 function buildMasterActivation(){
   var ss=SpreadsheetApp.getActiveSpreadsheet(),sh=ss.getSheetByName('Activation');if(sh)ss.deleteSheet(sh);
   sh=ss.insertSheet('Activation',0);
-  if(sh.getMaxColumns()<6)sh.insertColumnsAfter(sh.getMaxColumns(),6-sh.getMaxColumns());
+  if(sh.getMaxColumns()<8)sh.insertColumnsAfter(sh.getMaxColumns(),8-sh.getMaxColumns());
   if(sh.getMaxRows()<110)sh.insertRowsAfter(sh.getMaxRows(),110-sh.getMaxRows());
-  sh.setColumnWidth(1,30);sh.setColumnWidth(2,180);sh.setColumnWidth(3,160);sh.setColumnWidth(4,500);sh.setColumnWidth(5,200);sh.setColumnWidth(6,200);
-  sh.getRange(1,1,sh.getMaxRows(),6).setFontFamily('Arial').setFontSize(11);
+  sh.setColumnWidth(1,30);sh.setColumnWidth(2,180);sh.setColumnWidth(3,160);sh.setColumnWidth(4,500);sh.setColumnWidth(5,200);sh.setColumnWidth(6,200);sh.setColumnWidth(7,150);sh.setColumnWidth(8,150);
+  sh.getRange(1,1,sh.getMaxRows(),8).setFontFamily('Arial').setFontSize(11);
   sh.getRange(1,1).setValue('Master CHI Scorecard — Site Registry').setFontWeight('bold').setFontSize(14).setFontColor(CLR.DB);
-  sh.getRange(2,1,1,6).setValues([['#','Site Name','CEM Name','CHI Sheet URL','Allow Access','Connection Status']]).setBackground(CLR.DB).setFontColor(CLR.W).setFontWeight('bold');
+  // Columns G/H (task ids) are auto-managed by the ClickUp sync — leave them blank here.
+  sh.getRange(2,1,1,8).setValues([['#','Site Name','CEM Name','CHI Sheet URL','Allow Access','Connection Status','Scorecard Task ID','History Task ID']]).setBackground(CLR.DB).setFontColor(CLR.W).setFontWeight('bold');
   sh.getRange(3,1).setValue(1).setHorizontalAlignment('center');
   sh.getRange(3,2).setValue("Dillard's").setBackground(CLR.ME);
   sh.getRange(3,3).setValue('Jaspreet').setBackground(CLR.ME);
@@ -194,14 +204,40 @@ function buildMasterActivation(){
   sh.setFrozenRows(2);
   ss.toast('Activation built with 100 site slots + CEM Name column.','Done');
 }
+// Registry columns that hold the auto-managed ClickUp task ids (one per list).
+var SCORECARD_TASK_ID_COL = 7;   // column G
+var HISTORY_TASK_ID_COL   = 8;   // column H
 function getActiveSites_(){
   var sh=SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Activation');
   if(!sh)throw new Error('Run Build Activation first.');
-  var sites=[],vals=sh.getRange(3,1,100,4).getValues();
+  // Columns 1-8: # | Site | CEM | URL | Allow | Status | Scorecard Task ID | History Task ID.
+  // Read defensively in case a narrow sheet predates the two task-id columns (they get
+  // added by ensureRegistryHeaders_); missing cells default to '' rather than 'undefined'.
+  var nCols=Math.min(8,sh.getMaxColumns()),sites=[],vals=sh.getRange(3,1,100,nCols).getValues();
+  function cell_(rowArr,idx){return idx<rowArr.length&&rowArr[idx]!=null?String(rowArr[idx]).trim():'';}
   for(var i=0;i<vals.length;i++){
-    var name=String(vals[i][1]).trim(),cem=String(vals[i][2]).trim(),url=String(vals[i][3]).trim();
-    if(name&&url){var sid=extractSheetId_(url);if(sid)sites.push({name:name,cem:cem,sid:sid});}}
+    var name=cell_(vals[i],1),cem=cell_(vals[i],2),url=cell_(vals[i],3);
+    if(name&&url){var sid=extractSheetId_(url);if(sid)sites.push({
+      name:name,cem:cem,sid:sid,
+      row:3+i,                                              // registry row, for id write-back
+      scTaskId:cell_(vals[i],6),                            // stored Scorecard task id (may be '')
+      histTaskId:cell_(vals[i],7)                           // stored History task id (may be '')
+    });}}
   return sites;
+}
+// Ensure the two auto-managed task-id columns have headers (self-healing for registries
+// built before these columns existed). Only writes when both header cells are blank, so
+// it never clobbers a hand-edited header. Existing site data is untouched.
+function ensureRegistryHeaders_(){
+  var sh=SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Activation');
+  if(!sh)return;
+  if(sh.getMaxColumns()<HISTORY_TASK_ID_COL)sh.insertColumnsAfter(sh.getMaxColumns(),HISTORY_TASK_ID_COL-sh.getMaxColumns());
+  var hdr=sh.getRange(2,SCORECARD_TASK_ID_COL,1,2).getValues()[0];
+  if(!String(hdr[0]).trim()&&!String(hdr[1]).trim()){
+    sh.getRange(2,SCORECARD_TASK_ID_COL,1,2).setValues([['Scorecard Task ID','History Task ID']])
+      .setBackground(CLR.DB).setFontColor(CLR.W).setFontWeight('bold');
+    sh.setColumnWidth(SCORECARD_TASK_ID_COL,150);sh.setColumnWidth(HISTORY_TASK_ID_COL,150);
+  }
 }
 function getMonthColumns_(){
   var today=new Date(),curYr=today.getFullYear(),curMn=today.getMonth()+1;
@@ -225,7 +261,7 @@ function getBiweekColumns_(){
     mn++;if(mn>12){mn=1;yr++;}if(mn===1)continue;}
   return cols;
 }
-function buildTrendTab_(tabName,labels,columns,titleSuffix,headerColor){
+function buildTrendTab_(tabName,row,columns,titleSuffix,headerColor){
   var ss=SpreadsheetApp.getActiveSpreadsheet(),sh=ss.getSheetByName(tabName);if(sh)ss.deleteSheet(sh);
   sh=ss.insertSheet(tabName);
   var sites=getActiveSites_(),nc=columns.length,ns=sites.length,totalCols=nc+1;
@@ -239,7 +275,7 @@ function buildTrendTab_(tabName,labels,columns,titleSuffix,headerColor){
   for(var s=0;s<ns;s++){var r=3+s,site=sites[s];
     sh.getRange(r,1).setValue(site.name).setFontWeight('bold');
     var rowFormulas=[];
-    for(var i=0;i<nc;i++)rowFormulas.push(impFormula_(site.sid,columns[i].dashCol,labels));
+    for(var i=0;i<nc;i++)rowFormulas.push(impFormula_(site.sid,columns[i].dashCol,row));
     if(nc>0)sh.getRange(r,2,1,nc).setFormulas([rowFormulas]).setNumberFormat('0.0').setHorizontalAlignment('center');}
   if(ns>0&&nc>0){var dataRange=sh.getRange(3,2,Math.max(ns,1),nc);
     sh.setConditionalFormatRules(sh.getConditionalFormatRules().concat([
@@ -249,24 +285,26 @@ function buildTrendTab_(tabName,labels,columns,titleSuffix,headerColor){
   sh.setFrozenRows(2);sh.setFrozenColumns(1);
   return ns+' sites × '+nc+' periods';
 }
+// Each metric carries its FIXED Dashboard row (see the Dashboard layout). Months/biweeks
+// are the columns; the row is constant per metric. Blank spacer rows have no row.
 function completeBlockDef_(){
   return [
-    {label:'CHI Score',         kind:'chi'},
+    {label:'CHI Score',         kind:'chi',                row:3},
     {label:'',                  kind:'blank'},
-    {label:'Performance Value', kind:'parent',color:CLR.P},
-    {label:'Solution KPIs',     kind:'child', color:CLR.P},
-    {label:'Uptime',            kind:'child', color:CLR.P},
-    {label:'MTBF / MTTR',       kind:'child', color:CLR.P},
+    {label:'Performance Value', kind:'parent',color:CLR.P, row:5},
+    {label:'Solution KPIs',     kind:'child', color:CLR.P, row:6},
+    {label:'Uptime',            kind:'child', color:CLR.P, row:7},
+    {label:'MTBF / MTTR',       kind:'child', color:CLR.P, row:8},
     {label:'',                  kind:'blank'},
-    {label:'Experience Value',  kind:'parent',color:CLR.E},
-    {label:'Frown vs Smile',    kind:'child', color:CLR.E},
-    {label:'Sentiment',         kind:'child', color:CLR.E},
-    {label:'Trust',             kind:'child', color:CLR.E},
+    {label:'Experience Value',  kind:'parent',color:CLR.E, row:10},
+    {label:'Frown vs Smile',    kind:'child', color:CLR.E, row:11},
+    {label:'Sentiment',         kind:'child', color:CLR.E, row:12},
+    {label:'Trust',             kind:'child', color:CLR.E, row:13},
     {label:'',                  kind:'blank'},
-    {label:'Business Value',    kind:'parent',color:CLR.B},
-    {label:'Throughput Blueprint', kind:'child', color:CLR.B, alts:['Thruput Blueprint']},
-    {label:'Outcome Metrics',   kind:'child', color:CLR.B},
-    {label:'Move the Needle',   kind:'child', color:CLR.B}
+    {label:'Business Value',    kind:'parent',color:CLR.B, row:15},
+    {label:'Throughput Blueprint', kind:'child', color:CLR.B, row:16},
+    {label:'Outcome Metrics',   kind:'child', color:CLR.B, row:17},
+    {label:'Move the Needle',   kind:'child', color:CLR.B, row:18}
   ];
 }
 function buildCompleteCHIData_(){
@@ -294,7 +332,7 @@ function buildCompleteCHIData_(){
       labelsCol.push([block[j].label]);
       var row=[];
       if(block[j].kind==='blank'){for(var i=0;i<nc;i++)row.push('');}
-      else{for(var i=0;i<nc;i++)row.push(impFormula_(site.sid,mCols[i].dashCol,[block[j].label].concat(block[j].alts||[])));}
+      else{for(var i=0;i<nc;i++)row.push(impFormula_(site.sid,mCols[i].dashCol,block[j].row));}
       valGrid.push(row);}
     sh.getRange(top,2,bl,1).setValues(labelsCol);
     if(nc>0){sh.getRange(top,3,bl,nc).setFormulas(valGrid).setNumberFormat('0.0').setHorizontalAlignment('center');}
@@ -313,11 +351,11 @@ function buildCompleteCHIData_(){
 function buildAllTrends(){
   var ss=SpreadsheetApp.getActiveSpreadsheet();ss.toast('Building trend sheets...','⏳');
   var mCols=getMonthColumns_(),bwCols=getBiweekColumns_(),r=[];
-  r.push('CHI: '+buildTrendTab_('CHI Trend',['CHI Score'],mCols,'CHI Score',CLR.DB));
-  r.push('Perf: '+buildTrendTab_('Performance Value Trend',['Performance Value'],mCols,'Performance Value',CLR.P));
-  r.push('Exp: '+buildTrendTab_('Experience Value Trend',['Experience Value'],mCols,'Experience Value',CLR.E));
-  r.push('Biz: '+buildTrendTab_('Business Value Trend',['Business Value'],mCols,'Business Value',CLR.B));
-  r.push('Frown: '+buildTrendTab_('Frown vs Smile Trend',['Frown vs Smile (2.1 score)','Frown Vs Smile Score'],bwCols,'Frown vs Smile',CLR.E));
+  r.push('CHI: '+buildTrendTab_('CHI Trend',3,mCols,'CHI Score',CLR.DB));
+  r.push('Perf: '+buildTrendTab_('Performance Value Trend',5,mCols,'Performance Value',CLR.P));
+  r.push('Exp: '+buildTrendTab_('Experience Value Trend',10,mCols,'Experience Value',CLR.E));
+  r.push('Biz: '+buildTrendTab_('Business Value Trend',15,mCols,'Business Value',CLR.B));
+  r.push('Frown: '+buildTrendTab_('Frown vs Smile Trend',22,bwCols,'Frown vs Smile',CLR.E));
   r.push('Complete: '+buildCompleteCHIData_());
   ss.toast(r.join('\n'),'✅ All trend sheets built');
 }
@@ -472,9 +510,10 @@ function readChiHistory_(){
 // ════════════════════════════════════════════════════════
 // [ ClickUp field name (key in CU_FIELD_IDS) , source label in 'Complete CHI Data' ]
 // Note the label differences handled here: sheet 'Frown vs Smile' → field 'Frowns vs
-// Smiles'; 'Outcome Metrics' → 'Outcome Metric'. Rag Status is derived from CHI Score
-// separately. ('Throughput Blueprint' now matches on both sides after the rename; the
-// sheet still tolerates the old 'Thruput Blueprint' spelling via completeBlockDef_ alts.)
+// Smiles'; 'Outcome Metrics' → 'Outcome Metric'. ('Throughput Blueprint' matches on both
+// sides.) Source labels are the row labels written into 'Complete CHI Data' column B by
+// completeBlockDef_ — they no longer depend on each site's Dashboard wording, since the
+// Master now reads Dashboard cells by fixed position. Rag Status is derived from CHI Score.
 var METRIC_MAP = [
   ['CHI Score',            'CHI Score'],
   ['Performance Value',    'Performance Value'],
@@ -569,120 +608,158 @@ function applyDropdown_(taskId,fieldId,optionId,targetIdx,curRaw){
   return curEmpty?'set':'update';
 }
 
-function clickupUpdateScorecard(report){
+// Link every active site to a stable ClickUp task on `list`, keyed by the id stored in
+// registry column `idCol` (mirrored on the site object as `idProp`). Resolution per site:
+//   1) stored id that still exists  → use it directly
+//   2) else backfill once by fuzzy NAME-matching an existing (unclaimed) task → store its id
+//   3) else create a new task                                                → store its id
+// The id is written back to the registry so a later site rename never orphans the task.
+// Returns { idToSite:{taskId→site}, added:[names], tasks:[all task objects incl. created] }.
+function ensureTaskLinks_(list,idCol,idProp,sites){
+  var sh=SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Activation');
+  var tasks=getAllTasks_(list.id),byId={};
+  for(var i=0;i<tasks.length;i++)byId[tasks[i].id]=tasks[i];
+  var added=[],idToSite={},claimed={};
+  function claim(site,taskId){site[idProp]=taskId;if(sh)sh.getRange(site.row,idCol).setValue(taskId);idToSite[taskId]=site;claimed[taskId]=true;}
+  for(var s=0;s<sites.length;s++){
+    var site=sites[s],storedId=site[idProp];
+    // 1) stored id still valid → use directly
+    if(storedId&&byId[storedId]&&!claimed[storedId]){idToSite[storedId]=site;claimed[storedId]=true;continue;}
+    // 2) backfill: first unclaimed existing task whose name matches this site
+    var matched=null;
+    for(var ti=0;ti<tasks.length;ti++){
+      if(claimed[tasks[ti].id])continue;
+      if(matchSite_(tasks[ti].name,[site.name])){matched=tasks[ti];break;}}
+    if(matched){claim(site,matched.id);continue;}
+    // 3) create a new task and store the returned id
+    Utilities.sleep(350);
+    try{
+      var created=cuFetch_('POST','/list/'+list.id+'/task',{name:site.name});
+      byId[created.id]=created;tasks.push(created);
+      claim(site,created.id);added.push(site.name);
+    }catch(e){Logger.log('Failed to create task for "'+site.name+'" on list '+list.id+' — '+e.message);}
+  }
+  return {idToSite:idToSite,added:added,tasks:tasks};
+}
+// Prune by ID: delete any task whose id is claimed by no active site (idToSite). SAFETY:
+// refuses to prune when nothing is claimed (e.g. Activation unreadable → zero sites), so a
+// bad read can never wipe the list. `tasks` reuses the snapshot from ensureTaskLinks_.
+function pruneListById_(list,idToSite,tasks){
+  var claimed=idToSite||{};
+  if(Object.keys(claimed).length===0){Logger.log('Prune skipped for list '+list.id+' — no claimed tasks (safety guard).');return [];}
+  var all=tasks||getAllTasks_(list.id),deleted=[];
+  for(var i=0;i<all.length;i++){
+    if(claimed[all[i].id])continue;   // claimed by an active site → keep
+    Utilities.sleep(200);
+    try{cuFetch_('DELETE','/task/'+all[i].id);Logger.log('Pruned orphan task: "'+all[i].name+'" id='+all[i].id);deleted.push(all[i].name);}
+    catch(e){Logger.log('Prune failed: "'+all[i].name+'" — '+e.message);}
+  }
+  return deleted;
+}
+// Rename a task in place to mirror the current site name (PUT /task/{id}). Change-detected
+// so we only call the API when the name actually differs. Returns 'Name' when it renamed.
+function renameTaskIfNeeded_(task,taskId,siteName){
+  if(!task||String(task.name)===String(siteName))return null;
+  try{Utilities.sleep(150);cuFetch_('PUT','/task/'+taskId,{name:siteName});return 'Name';}
+  catch(e){Logger.log('rename failed task='+taskId+': '+e.message);return null;}
+}
+
+function clickupUpdateScorecard(report,list,link){
   var ss=SpreadsheetApp.getActiveSpreadsheet();
   if(!CU_TOKEN){ss.toast('API token not set. Run clickupSaveToken first.','❌');return;}
+  // Allow standalone calls (e.g. a legacy trigger): build the list + id-links ourselves.
+  if(!list||!link){
+    var sites0;try{sites0=getActiveSites_();}catch(e){ss.toast(e.message,'❌');return;}
+    try{list=findTestingList_();}catch(e){ss.toast(e.message,'❌');return;}
+    link=ensureTaskLinks_(list,SCORECARD_TASK_ID_COL,'scTaskId',sites0);
+  }
 
   ss.toast('Reading Complete CHI Data...','⏳');
   var chiData=readCompleteChiData_();
   if(!chiData.data||Object.keys(chiData.data).length===0){
     ss.toast('No data found. Run buildAllTrends first.','❌');return;}
 
-  var allKeys=Object.keys(chiData.data);
-
   // CU_FIELD_IDS / CU_RAG_OPTIONS are confirmed against the live list — use them directly.
   var FIELD_IDS=CU_FIELD_IDS, RAG_OPTS=CU_RAG_OPTIONS;
-
-  ss.toast('Fetching tasks...','⏳');
-  var list=findTestingList_(),tasks=getAllTasks_(list.id);
   var monthFieldId=resolveFieldIdByName_(list.id,'Month');
   if(!monthFieldId)Logger.log('WARN: "Month" field not found on list — month label will not be written.');
   var ragId=FIELD_IDS['Rag Status'];
   var ragIdxById=dropdownIndexById_(list.id,ragId);   // optionId → orderindex, for change-detection
-  Logger.log('Tasks: '+tasks.length+'  Reporting month: '+chiData.monthLabel);
 
-  ss.toast('Updating '+tasks.length+' tasks...','⏳');
-  var updated=0,skipped=0;
-  for(var t=0;t<tasks.length;t++){
-    var task=tasks[t],matchKey=matchSite_(task.name,allKeys);
-    if(!matchKey){Logger.log('No match: "'+task.name+'"');skipped++;continue;}
-    var d=chiData.data[matchKey]||{};
+  var byId={};for(var i=0;i<link.tasks.length;i++)byId[link.tasks[i].id]=link.tasks[i];
+  var ids=Object.keys(link.idToSite);
+  Logger.log('Scorecard tasks linked: '+ids.length+'  Reporting month: '+chiData.monthLabel);
+  ss.toast('Updating '+ids.length+' tasks...','⏳');
+  var updated=0;
+  for(var k=0;k<ids.length;k++){
+    var taskId=ids[k],site=link.idToSite[taskId],task=byId[taskId];
+    var d=chiData.data[site.name.trim().toLowerCase()]||{};   // data key = site name, lowercased
     var chi=d['CHI Score'];if(chi===undefined||chi==='')chi=null;
 
     // Snapshot each field's CURRENT raw value, so we only write what actually changed.
-    var cur={},cfs=task.custom_fields||[];
+    var cur={},cfs=(task&&task.custom_fields)||[];
     for(var cf=0;cf<cfs.length;cf++){var fv=cfs[cf];cur[fv.id]=fv.value;}
 
-    // Track which fields actually changed for this task.
+    // Track what actually changed for this task (incl. an in-place rename).
     var changed=[];
-    if(applyField_(task.id,monthFieldId,chiData.monthLabel,cur[monthFieldId]))changed.push('Month');
+    var renamed=renameTaskIfNeeded_(task,taskId,site.name);if(renamed)changed.push(renamed);
+    if(applyField_(taskId,monthFieldId,chiData.monthLabel,cur[monthFieldId]))changed.push('Month');
 
     // Metric fields — set when present, blank when missing.
     for(var mi=0;mi<METRIC_MAP.length;mi++){
       var fid=FIELD_IDS[METRIC_MAP[mi][0]];if(!fid)continue;
       var val=d[METRIC_MAP[mi][1]];if(val===undefined)val=null;
-      if(applyField_(task.id,fid,val,cur[fid]))changed.push(METRIC_MAP[mi][0]);}
+      if(applyField_(taskId,fid,val,cur[fid]))changed.push(METRIC_MAP[mi][0]);}
 
     // RAG status derived from CHI (still written to ClickUp via change-detection, but
     // intentionally NOT listed in the change report).
     if(chi!==null){
       var optId=RAG_OPTS[ragKey_(chi)];
-      if(optId)applyDropdown_(task.id,ragId,optId,ragIdxById[optId],cur[ragId]);
+      if(optId)applyDropdown_(taskId,ragId,optId,ragIdxById[optId],cur[ragId]);
       else Logger.log('  RAG option not found for: '+ragKey_(chi));
-    }else applyDropdown_(task.id,ragId,null,null,cur[ragId]);
+    }else applyDropdown_(taskId,ragId,null,null,cur[ragId]);
 
-    if(changed.length){if(report)report.push(task.name+': '+changed.join(', '));updated++;}
-    Logger.log('→ '+task.name+'  CHI='+chi+(changed.length?'  changed: '+changed.join(','):'  (no change)'));
+    if(changed.length){if(report)report.push(site.name+': '+changed.join(', '));updated++;}
+    Logger.log('→ '+site.name+'  CHI='+chi+(changed.length?'  changed: '+changed.join(','):'  (no change)'));
   }
-  ss.toast('✅ Scorecard: '+updated+' task(s) changed, '+skipped+' unmatched.\nMonth: '+chiData.monthLabel,'✅ Done');
-  Logger.log('=== SCORECARD DONE: '+updated+' changed, '+skipped+' unmatched ===');
+  ss.toast('✅ Scorecard: '+updated+' task(s) changed.\nMonth: '+chiData.monthLabel,'✅ Done');
+  Logger.log('=== SCORECARD DONE: '+updated+' changed ===');
 }
 
-function addMissingTasksToList_(list){
-  var tasks=getAllTasks_(list.id),existing={};
-  for(var i=0;i<tasks.length;i++) existing[normHard_(tasks[i].name)]=true;
-  var sites=getActiveSites_(),added=[],skipped=0;
-  for(var i=0;i<sites.length;i++){
-    if(existing[normHard_(sites[i].name)]){skipped++;continue;}
-    Utilities.sleep(350);
-    try{cuFetch_('POST','/list/'+list.id+'/task',{name:sites[i].name});added.push(sites[i].name);}
-    catch(e){Logger.log('Failed to add: '+sites[i].name+' — '+e.message);}
-  }
-  return {added:added,skipped:skipped};
-}
-// Mirror deletions: permanently delete any task whose name matches no active site.
-// SAFETY: refuses to prune when siteKeys is empty (e.g. Activation sheet unreadable),
-// so a bad read can never wipe the whole list. Returns the list of deleted task names.
-function pruneListToActiveSites_(list,siteKeys){
-  if(!siteKeys||siteKeys.length===0){Logger.log('Prune skipped for list '+list.id+' — no active sites (safety guard).');return [];}
-  var tasks=getAllTasks_(list.id),deleted=[];
-  for(var i=0;i<tasks.length;i++){
-    if(matchSite_(tasks[i].name,siteKeys))continue;   // matches an active site → keep
-    Utilities.sleep(200);
-    try{cuFetch_('DELETE','/task/'+tasks[i].id);Logger.log('Pruned orphan task: "'+tasks[i].name+'" id='+tasks[i].id);deleted.push(tasks[i].name);}
-    catch(e){Logger.log('Prune failed: "'+tasks[i].name+'" — '+e.message);}
-  }
-  return deleted;
-}
 function clickupAddMissingTasks(){
   var ss=SpreadsheetApp.getActiveSpreadsheet();
   if(!CU_TOKEN){ss.toast('API token not set. Run clickupSaveToken first.','❌');return;}
-  ss.toast('Adding missing sites to '+CU_LIST_NAME+'...','⏳');
-  var list;try{list=findTestingList_();}catch(e){ss.toast(e.message,'❌');return;}
-  var r=addMissingTasksToList_(list);
-  ss.toast('✅ Added: '+r.added.length+' new tasks\nAlready existed: '+r.skipped,'✅');
-  Logger.log('Scorecard tasks — added: '+r.added.length+', skipped: '+r.skipped);
+  ss.toast('Linking sites to '+CU_LIST_NAME+'...','⏳');
+  var list,sites;try{list=findTestingList_();sites=getActiveSites_();}catch(e){ss.toast(e.message,'❌');return;}
+  ensureRegistryHeaders_();
+  var r=ensureTaskLinks_(list,SCORECARD_TASK_ID_COL,'scTaskId',sites);
+  ss.toast('✅ Added: '+r.added.length+' new tasks\nLinked total: '+Object.keys(r.idToSite).length,'✅');
+  Logger.log('Scorecard tasks — added: '+r.added.length+', linked: '+Object.keys(r.idToSite).length);
 }
 function clickupAddMissingHistoryTasks(){
   var ss=SpreadsheetApp.getActiveSpreadsheet();
   if(!CU_TOKEN){ss.toast('API token not set. Run clickupSaveToken first.','❌');return;}
-  ss.toast('Adding missing sites to '+CU_HISTORY_LIST_NAME+'...','⏳');
-  var list;try{list=findHistoryList_();}catch(e){ss.toast(e.message,'❌');return;}
-  var r=addMissingTasksToList_(list);
-  ss.toast('✅ Added: '+r.added.length+' new tasks\nAlready existed: '+r.skipped,'✅');
-  Logger.log('History tasks — added: '+r.added.length+', skipped: '+r.skipped);
+  ss.toast('Linking sites to '+CU_HISTORY_LIST_NAME+'...','⏳');
+  var list,sites;try{list=findHistoryList_();sites=getActiveSites_();}catch(e){ss.toast(e.message,'❌');return;}
+  ensureRegistryHeaders_();
+  var r=ensureTaskLinks_(list,HISTORY_TASK_ID_COL,'histTaskId',sites);
+  ss.toast('✅ Added: '+r.added.length+' new tasks\nLinked total: '+Object.keys(r.idToSite).length,'✅');
+  Logger.log('History tasks — added: '+r.added.length+', linked: '+Object.keys(r.idToSite).length);
 }
 
-function clickupUpdateHistory(report){
+function clickupUpdateHistory(report,list,link){
   var ss=SpreadsheetApp.getActiveSpreadsheet();
   if(!CU_TOKEN){ss.toast('API token not set. Run clickupSaveToken first.','❌');return;}
+  // Allow standalone calls: build the list + id-links ourselves.
+  if(!list||!link){
+    var sites0;try{sites0=getActiveSites_();}catch(e){ss.toast(e.message,'❌');return;}
+    try{list=findHistoryList_();}catch(e){ss.toast(e.message,'❌');return;}
+    link=ensureTaskLinks_(list,HISTORY_TASK_ID_COL,'histTaskId',sites0);
+  }
   ss.toast('Reading CHI history...','⏳');
   var hist=readChiHistory_();
   if(!hist.data||Object.keys(hist.data).length===0){ss.toast('No data found. Run buildAllTrends first.','❌');return;}
-  var allKeys=Object.keys(hist.data);
 
-  ss.toast('Fetching history tasks...','⏳');
-  var list;try{list=findHistoryList_();}catch(e){ss.toast(e.message,'❌');return;}
   // Resolve month-field name → id from the live list.
   var fieldMap={},rawFields=(cuFetch_('GET','/list/'+list.id+'/field').fields)||[];
   for(var i=0;i<rawFields.length;i++)if(rawFields[i].name)fieldMap[String(rawFields[i].name).trim()]=rawFields[i].id;
@@ -690,28 +767,29 @@ function clickupUpdateHistory(report){
   for(var m=0;m<hist.months.length;m++)if(!fieldMap[hist.months[m]])missingFields.push(hist.months[m]);
   if(missingFields.length)Logger.log('History fields not found on list (skipped): '+missingFields.join(', '));
 
-  var tasks=getAllTasks_(list.id);
-  Logger.log('History tasks: '+tasks.length+'  months: '+hist.months.join(', '));
-  ss.toast('Updating '+tasks.length+' history tasks...','⏳');
-  var updated=0,skipped=0;
-  for(var t=0;t<tasks.length;t++){
-    var task=tasks[t],matchKey=matchSite_(task.name,allKeys);
-    if(!matchKey){Logger.log('No match: "'+task.name+'"');skipped++;continue;}
-    var d=hist.data[matchKey]||{};
-    var cur={},cfs=task.custom_fields||[];
+  var byId={};for(var i=0;i<link.tasks.length;i++)byId[link.tasks[i].id]=link.tasks[i];
+  var ids=Object.keys(link.idToSite);
+  Logger.log('History tasks linked: '+ids.length+'  months: '+hist.months.join(', '));
+  ss.toast('Updating '+ids.length+' history tasks...','⏳');
+  var updated=0;
+  for(var k=0;k<ids.length;k++){
+    var taskId=ids[k],site=link.idToSite[taskId],task=byId[taskId];
+    var d=hist.data[site.name.trim().toLowerCase()]||{};
+    var cur={},cfs=(task&&task.custom_fields)||[];
     for(var cf=0;cf<cfs.length;cf++){var fv=cfs[cf];cur[fv.id]=fv.value;}
     var changedM=[];
+    var renamed=renameTaskIfNeeded_(task,taskId,site.name);if(renamed)changedM.push(renamed);
     for(var mm=0;mm<hist.months.length;mm++){
       var fname=hist.months[mm],fid=fieldMap[fname];
       if(!fid)continue;
       var val=d[fname];if(val===undefined)val=null;
-      if(applyField_(task.id,fid,val,cur[fid]))changedM.push(fname);
+      if(applyField_(taskId,fid,val,cur[fid]))changedM.push(fname);
     }
-    if(changedM.length){if(report)report.push(task.name+': '+changedM.join(', '));updated++;}
-    Logger.log('→ '+task.name+(changedM.length?' history changed: '+changedM.join(','):' history (no change)'));
+    if(changedM.length){if(report)report.push(site.name+': '+changedM.join(', '));updated++;}
+    Logger.log('→ '+site.name+(changedM.length?' history changed: '+changedM.join(','):' history (no change)'));
   }
-  ss.toast('✅ History: '+updated+' task(s) changed, '+skipped+' unmatched.','✅ Done');
-  Logger.log('=== HISTORY DONE: '+updated+' changed, '+skipped+' unmatched ===');
+  ss.toast('✅ History: '+updated+' task(s) changed.','✅ Done');
+  Logger.log('=== HISTORY DONE: '+updated+' changed ===');
 }
 
 function clickupDiagnose(){
