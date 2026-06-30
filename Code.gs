@@ -1,8 +1,9 @@
 /**
  * Master CHI Scorecard v2.3 + ClickUp Sync v3
  *
- * API token stored in Apps Script → User Properties (per-user, not shared)
- * Property name: CU_TOKEN  (set via clickupSaveToken)
+ * API token stored in Apps Script → Script Properties (SHARED — the whole team can sync),
+ * with fallback to a personal User-Properties token. Property name: CU_TOKEN
+ * (set via clickupSaveToken; promote an existing personal token via clickupShareTokenWithTeam)
  *
  * RUN ORDER:
  *   1. Build all trend sheets  (⚙ Master CHI → 📊 Build all trend sheets)
@@ -18,7 +19,11 @@
  */
 
 // ═══ CONFIG ═══
-var CU_TOKEN     = PropertiesService.getUserProperties().getProperty('CU_TOKEN');
+// Token resolution: prefer the SHARED token (Script Properties) so the whole team can sync,
+// and fall back to a personal token (User Properties) if no shared one is set. Owner sets the
+// shared token once via clickupShareTokenWithTeam (or clickupSaveToken).
+var CU_TOKEN     = PropertiesService.getScriptProperties().getProperty('CU_TOKEN')
+                   || PropertiesService.getUserProperties().getProperty('CU_TOKEN');
 var CU_TEAM_ID   = '90161459573';
 var CU_FOLDER_ID = '90169480684';  // Customer Success → Health & Growth
 var CU_LIST_NAME = 'Rough CHI Scorecard';   // current name (informational only — targeting is by ID)
@@ -62,14 +67,18 @@ var CLR = {DB:'#1F4E79',W:'#FFFFFF',P:'#2E75B6',E:'#548235',B:'#BF8F00',
 var MN_AB = {2:'Feb',3:'Mar',4:'Apr',5:'May',6:'Jun',7:'Jul',8:'Aug',9:'Sep',10:'Oct',11:'Nov',12:'Dec'};
 
 // ════════════════════════════════════════════════════════
-// API TOKEN SETUP (run once — only you can see User Properties)
+// API TOKEN SETUP
 // ════════════════════════════════════════════════════════
 /**
+ * Save the ClickUp token to SHARED Script Properties so the WHOLE TEAM can sync (anyone who
+ * clicks "Sync to ClickUp now" uses this one token).
  * HOW TO USE:
  * 1. Replace PASTE_YOUR_TOKEN_HERE below with your actual ClickUp API token
  * 2. Run this function once from the editor
  * 3. Remove the token value (put back PASTE_YOUR_TOKEN_HERE)
- * Token is saved to User Properties — editors of this sheet cannot read it.
+ * NOTE: Script Properties are shared, so anyone who can open this Apps Script project can read
+ * the token. (If you already saved a personal token, just run clickupShareTokenWithTeam once
+ * instead — no need to paste it again.)
  */
 function clickupSaveToken() {
   var token = 'PASTE_YOUR_TOKEN_HERE';
@@ -77,8 +86,22 @@ function clickupSaveToken() {
     Logger.log('Step 1: Replace PASTE_YOUR_TOKEN_HERE with your real token, then run again.');
     return;
   }
-  PropertiesService.getUserProperties().setProperty('CU_TOKEN', token);
-  Logger.log('Done — token saved to User Properties. Now remove the token from the code (put back PASTE_YOUR_TOKEN_HERE).');
+  PropertiesService.getScriptProperties().setProperty('CU_TOKEN', token);
+  Logger.log('Done — token saved to SHARED Script Properties; the whole team can now sync. Now remove the token from the code (put back PASTE_YOUR_TOKEN_HERE).');
+}
+
+/**
+ * One-time: promote your existing PERSONAL token (User Properties) to the SHARED store
+ * (Script Properties) so teammates stop getting "API token not set." No re-pasting needed —
+ * run this once from the editor. (Optionally clears your personal copy so there's one source.)
+ */
+function clickupShareTokenWithTeam() {
+  var personal = PropertiesService.getUserProperties().getProperty('CU_TOKEN');
+  var shared   = PropertiesService.getScriptProperties().getProperty('CU_TOKEN');
+  if (shared) { Logger.log('A shared token is already set — the whole team can sync. Nothing to do.'); return; }
+  if (!personal) { Logger.log('No personal token found. Set one first via clickupSaveToken, then run this again.'); return; }
+  PropertiesService.getScriptProperties().setProperty('CU_TOKEN', personal);
+  Logger.log('Done — your token is now SHARED (Script Properties). The whole team can sync. You can keep or clear your personal copy.');
 }
 
 
